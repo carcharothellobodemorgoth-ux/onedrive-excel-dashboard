@@ -119,11 +119,18 @@ export function DashboardClient({
         const res = await fetch(
           `/api/excel${qs.toString() ? `?${qs}` : ""}`,
         );
-        const data = await res.json();
+        const raw = await res.text();
+        const data = raw
+          ? (JSON.parse(raw) as Record<string, unknown>)
+          : {};
 
-        if (res.status === 409 && data.candidates) {
-          setCandidates(data.candidates);
-          setError(data.message ?? "Elegí una planilla");
+        if (res.status === 409 && Array.isArray(data.candidates)) {
+          setCandidates(data.candidates as DriveItem[]);
+          setError(
+            typeof data.message === "string"
+              ? data.message
+              : "Elegí una planilla",
+          );
           setItem(null);
           setItemId(null);
           setDriveId(null);
@@ -131,8 +138,23 @@ export function DashboardClient({
           return;
         }
 
-        if (!res.ok) throw new Error(data.error ?? data.message ?? "No se pudo leer la Excel");
-        applySummary(data);
+        if (!res.ok) {
+          throw new Error(
+            typeof data.error === "string"
+              ? data.error
+              : typeof data.message === "string"
+                ? data.message
+                : `Error HTTP ${res.status}`,
+          );
+        }
+        applySummary(
+          data as {
+            item: DriveItem;
+            itemId: string;
+            driveId: string;
+            worksheets: Worksheet[];
+          },
+        );
       } catch (e) {
         setError(e instanceof Error ? e.message : "Error desconocido");
       } finally {
@@ -152,11 +174,25 @@ export function DashboardClient({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ shareUrl: shareUrl.trim() }),
       });
-      const data = await res.json();
+      const raw = await res.text();
+      const data = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
       if (!res.ok || data.ok === false) {
-        throw new Error(data.message ?? data.error ?? "No se pudo abrir el link");
+        throw new Error(
+          typeof data.message === "string"
+            ? data.message
+            : typeof data.error === "string"
+              ? data.error
+              : `Error HTTP ${res.status}`,
+        );
       }
-      applySummary(data);
+      applySummary(
+        data as {
+          item: DriveItem;
+          itemId: string;
+          driveId: string;
+          worksheets: Worksheet[];
+        },
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error desconocido");
     } finally {
@@ -179,9 +215,16 @@ export function DashboardClient({
           driveId: resolvedDriveId,
         });
         const res = await fetch(`/api/excel?${qs.toString()}`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? "No se pudo leer la hoja");
-        setSheet(data);
+        const raw = await res.text();
+        const data = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+        if (!res.ok) {
+          throw new Error(
+            typeof data.error === "string"
+              ? data.error
+              : `Error HTTP ${res.status}`,
+          );
+        }
+        setSheet(data as SheetPayload);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Error desconocido");
         setSheet(null);

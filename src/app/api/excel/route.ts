@@ -1,30 +1,47 @@
-import { auth, getGraphAccessToken } from "@/auth";
+import { auth } from "@/auth";
 import { getWorksheetData, loadWorkbookSummary } from "@/lib/graph";
 import { NextRequest, NextResponse } from "next/server";
 
-async function requireSessionAndToken() {
+async function requireGraphToken() {
   const session = await auth();
   if (!session?.user) {
     return {
       error: NextResponse.json({ error: "No autenticado" }, { status: 401 }),
     };
   }
-
-  const token = await getGraphAccessToken();
-  if (!token.ok) {
+  if (session.error || !session.accessToken) {
     return {
       error: NextResponse.json(
-        { error: token.error, code: "reauth_required" },
-        { status: token.status },
+        {
+          error:
+            "Sesión de Microsoft expirada o incompleta. Cerrá sesión y volvé a entrar.",
+          detail: session.error ?? "missing_access_token",
+          code: "reauth_required",
+        },
+        { status: 401 },
       ),
     };
   }
-
-  return { accessToken: token.accessToken };
+  if (
+    !session.accessToken.includes(".") ||
+    session.accessToken.length < 20
+  ) {
+    return {
+      error: NextResponse.json(
+        {
+          error:
+            "Token de Microsoft inválido. Cerrá sesión y volvé a entrar.",
+          code: "reauth_required",
+        },
+        { status: 401 },
+      ),
+    };
+  }
+  return { accessToken: session.accessToken };
 }
 
 export async function GET(request: NextRequest) {
-  const gate = await requireSessionAndToken();
+  const gate = await requireGraphToken();
   if ("error" in gate) return gate.error;
 
   const worksheetId = request.nextUrl.searchParams.get("worksheetId");
@@ -86,7 +103,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const gate = await requireSessionAndToken();
+  const gate = await requireGraphToken();
   if ("error" in gate) return gate.error;
 
   try {

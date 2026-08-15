@@ -1,10 +1,9 @@
 import NextAuth from "next-auth";
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
-import { getToken } from "next-auth/jwt";
-import { cookies, headers } from "next/headers";
 
 declare module "next-auth" {
   interface Session {
+    accessToken?: string;
     error?: string;
   }
 }
@@ -28,8 +27,13 @@ const scopes = [
 
 const msaIssuer =
   process.env.AUTH_MICROSOFT_ENTRA_ID_ISSUER ??
-  // Personal MSA tenant GUID (not the "consumers" alias — OIDC issuer must match)
   "https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0";
+
+/** Per-instance cache so large Graph access tokens never enter the session cookie. */
+const accessCache = new Map<
+  string,
+  { accessToken: string; expiresAtMs: number }
+>();
 
 function tokenEndpoint(): string {
   return `${msaIssuer.replace(/\/$/, "")}/oauth2/v2.0/token`;
@@ -38,7 +42,7 @@ function tokenEndpoint(): string {
 async function exchangeRefreshToken(
   refreshToken: string,
 ): Promise<
-  | { ok: true; accessToken: string; refreshToken?: string }
+  | { ok: true; accessToken: string; refreshToken?: string; expiresIn: number }
   | { ok: false; error: string }
 > {
   const response = await fetch(tokenEndpoint(), {
@@ -54,12 +58,22 @@ async function exchangeRefreshToken(
     cache: "no-store",
   });
 
-  const refreshed = (await response.json()) as {
+  const raw = await response.text();
+  let refreshed: {
     access_token?: string;
     refresh_token?: string;
+    expires_in?: number;
     error?: string;
     error_description?: string;
-  };
+  } = {};
+  try {
+    refreshed = raw ? (JSON.parse(raw) as typeof refreshed) : {};
+  } catch {
+    return {
+      ok: false,
+      error: `Token endpoint non-JSON (${response.status}): ${raw.slice(0, 120)}`,
+    };
+  }
 
   if (!response.ok || !refreshed.access_token) {
     return {
@@ -75,7 +89,30 @@ async function exchangeRefreshToken(
     ok: true,
     accessToken: refreshed.access_token,
     refreshToken: refreshed.refresh_token,
+    expiresIn: refreshed.expires_in ?? 3600,
   };
+}
+
+function cacheAccess(
+  sub: string,
+  accessToken: string,
+  expiresInSec: number,
+): void {
+  accessCache.set(sub, {
+    accessToken,
+    expiresAtMs: Date.now() + Math.max(60, expiresInSec - 60) * 1000,
+  });
+}
+
+function cachedAccess(sub: string | undefined): string | undefined {
+  if (!sub) return undefined;
+  const hit = accessCache.get(sub);
+  if (!hit) return undefined;
+  if (Date.now() >= hit.expiresAtMs) {
+    accessCache.delete(sub);
+    return undefined;
+  }
+  return hit.accessToken;
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -93,23 +130,52 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
   callbacks: {
     async jwt({ token, account }) {
-      // Never persist Graph access_token in the session cookie — MSA tokens are large
-      // and truncate the Auth.js JWT (→ Graph IDX14100 "JWT is not well formed").
-      if (account?.refresh_token) {
-        token.refreshToken = account.refresh_token;
+      // Keep only refreshToken in the cookie (MSA access tokens are huge and
+      // truncate Auth.js cookies → Graph "JWT is not well formed").
+      if (account) {
+        if (account.refresh_token) {
+          token.refreshToken = account.refresh_token;
+        }
+        if (account.access_token && token.sub) {
+          const expiresIn = account.expires_at
+            ? Math.max(60, account.expires_at - Math.floor(Date.now() / 1000))
+            : 3600;
+          cacheAccess(token.sub, account.access_token, expiresIn);
+        }
         token.error = undefined;
+        return token;
       }
-      if ("accessToken" in token) {
-        delete (token as Record<string, unknown>).accessToken;
+
+      if (token.sub && cachedAccess(token.sub)) {
+        token.error = undefined;
+        return token;
       }
-      if ("expiresAt" in token) {
-        delete (token as Record<string, unknown>).expiresAt;
+
+      if (!token.refreshToken || typeof token.refreshToken !== "string") {
+        return { ...token, error: "RefreshTokenMissing" };
       }
+
+      const exchanged = await exchangeRefreshToken(token.refreshToken);
+      if (!exchanged.ok) {
+        return { ...token, error: `RefreshAccessTokenError:${exchanged.error}` };
+      }
+
+      if (token.sub) {
+        cacheAccess(token.sub, exchanged.accessToken, exchanged.expiresIn);
+      }
+      if (exchanged.refreshToken) {
+        token.refreshToken = exchanged.refreshToken;
+      }
+      token.error = undefined;
       return token;
     },
     async session({ session, token }) {
       session.error =
         typeof token.error === "string" ? token.error : undefined;
+      const access = cachedAccess(
+        typeof token.sub === "string" ? token.sub : undefined,
+      );
+      session.accessToken = access;
       return session;
     },
   },
@@ -118,75 +184,3 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   },
   trustHost: true,
 });
-
-/**
- * Fresh Microsoft Graph access token for the current user.
- * Uses only the refresh_token stored in the Auth.js JWT cookie.
- */
-export async function getGraphAccessToken(): Promise<
-  { ok: true; accessToken: string } | { ok: false; status: number; error: string }
-> {
-  const headerList = await headers();
-  const cookieStore = await cookies();
-  const cookieHeader = cookieStore
-    .getAll()
-    .map((c) => `${c.name}=${c.value}`)
-    .join("; ");
-
-  const jwt = await getToken({
-    // Minimal req shape for next-auth/jwt in App Router
-    req: {
-      headers: {
-        cookie: cookieHeader,
-        ...Object.fromEntries(headerList.entries()),
-      },
-    } as Parameters<typeof getToken>[0]["req"],
-    secret: process.env.AUTH_SECRET,
-    secureCookie:
-      process.env.AUTH_URL?.startsWith("https://") ||
-      process.env.NODE_ENV === "production",
-  });
-
-  const refreshToken =
-    typeof jwt?.refreshToken === "string" ? jwt.refreshToken : null;
-
-  if (!refreshToken) {
-    return {
-      ok: false,
-      status: 401,
-      error:
-        "Sesión sin permiso de OneDrive. Cerrá sesión y volvé a entrar con Microsoft.",
-    };
-  }
-
-  try {
-    const exchanged = await exchangeRefreshToken(refreshToken);
-    if (!exchanged.ok) {
-      return {
-        ok: false,
-        status: 401,
-        error: `Sesión expirada (${exchanged.error}). Cerrá sesión y volvé a entrar.`,
-      };
-    }
-
-    if (
-      !exchanged.accessToken.includes(".") ||
-      exchanged.accessToken.length < 20
-    ) {
-      return {
-        ok: false,
-        status: 401,
-        error:
-          "Token de Microsoft inválido. Cerrá sesión y volvé a entrar.",
-      };
-    }
-
-    return { ok: true, accessToken: exchanged.accessToken };
-  } catch (e) {
-    return {
-      ok: false,
-      status: 401,
-      error: e instanceof Error ? e.message : "No se pudo renovar el token",
-    };
-  }
-}
