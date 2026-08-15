@@ -7,8 +7,15 @@ export type Kpi = {
 
 export type ChartSeries = {
   name: string;
-  kind?: "bar" | "pie";
-  data: { label: string; value: number }[];
+  kind?: "bar" | "pie" | "stacked";
+  /** Full-width in the charts grid */
+  wide?: boolean;
+  data: {
+    label: string;
+    value?: number;
+    gastado?: number;
+    queda?: number;
+  }[];
 };
 
 export type ProyeccionView = {
@@ -472,20 +479,36 @@ export function buildProyeccionView(
   }
 
   const width = Math.max(...rows.map((r) => r.length), 1);
-  const balanceSeries: { label: string; value: number }[] = [];
+  const historyStacked: {
+    label: string;
+    gastado: number;
+    queda: number;
+  }[] = [];
   for (let c = 1; c < width; c++) {
-    const v = toNumber(rows[43]?.[c] ?? null);
-    if (v === null) continue;
+    const quedaRaw = toNumber(rows[43]?.[c] ?? null);
+    const gastoPeriodo = sumRowsCols(rows, 4, 34, [c], [
+      ...SKIP,
+      /^resta$/i,
+      /^lo que queda$/i,
+      /^transf/i,
+    ]);
+    const gastoPost = sumRowsCols(rows, 37, 41, [c], SKIP);
+    const gastado = Math.abs(gastoPeriodo) + Math.abs(gastoPost);
+    // Include quincena if it has any movement (gastos or balance filled)
+    if (quedaRaw === null && gastado === 0) continue;
     const { halfLabel, monthLabel } = periodMeta(c);
-    balanceSeries.push({
+    historyStacked.push({
       label: `${halfLabel} ${monthLabel}`,
-      value: v,
+      gastado,
+      queda: Math.max(0, quedaRaw ?? 0),
     });
   }
-  if (balanceSeries.length > 1) {
+  if (historyStacked.length > 0) {
     charts.push({
-      name: `${labelAt(rows, 44) || "Balance final"} · historial quincenas`,
-      data: balanceSeries.slice(-12),
+      name: "Gastado vs lo que queda · todas las quincenas",
+      kind: "stacked",
+      wide: true,
+      data: historyStacked,
     });
   }
 

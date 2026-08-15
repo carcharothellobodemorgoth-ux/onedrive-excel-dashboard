@@ -16,8 +16,14 @@ import {
 
 type ChartSeries = {
   name: string;
-  kind?: "bar" | "pie";
-  data: { label: string; value: number }[];
+  kind?: "bar" | "pie" | "stacked";
+  wide?: boolean;
+  data: {
+    label: string;
+    value?: number;
+    gastado?: number;
+    queda?: number;
+  }[];
 };
 
 const PIE_COLORS = [
@@ -57,10 +63,12 @@ export function AutoCharts({ charts }: { charts: ChartSeries[] }) {
       {charts.map((chart) => (
         <article
           key={chart.name}
-          className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur"
+          className={`rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur ${
+            chart.wide ? "lg:col-span-2" : ""
+          }`}
         >
           <h3 className="mb-4 text-sm font-semibold text-white">{chart.name}</h3>
-          <div className="h-72 w-full">
+          <div className={`w-full ${chart.wide ? "h-80" : "h-72"}`}>
             <ResponsiveContainer width="100%" height="100%">
               {chart.kind === "pie" ? (
                 <PieChart>
@@ -96,6 +104,49 @@ export function AutoCharts({ charts }: { charts: ChartSeries[] }) {
                     wrapperStyle={{ fontSize: 11, color: "#a1a1aa" }}
                   />
                 </PieChart>
+              ) : chart.kind === "stacked" ? (
+                <BarChart
+                  data={chart.data}
+                  margin={{ left: 0, right: 8, bottom: 8 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fill: "#a1a1aa", fontSize: 10 }}
+                    interval={0}
+                    angle={-35}
+                    textAnchor="end"
+                    height={70}
+                  />
+                  <YAxis tick={{ fill: "#a1a1aa", fontSize: 11 }} />
+                  <Tooltip
+                    formatter={(value, name) => [
+                      money(typeof value === "number" ? value : Number(value)),
+                      name === "gastado" ? "Gastado" : "Lo que queda",
+                    ]}
+                    contentStyle={tooltipStyle}
+                  />
+                  <Legend
+                    wrapperStyle={{ fontSize: 12, color: "#a1a1aa" }}
+                    formatter={(value) =>
+                      value === "gastado" ? "Gastado" : "Lo que queda"
+                    }
+                  />
+                  <Bar
+                    dataKey="gastado"
+                    name="gastado"
+                    stackId="a"
+                    fill="#f87171"
+                    radius={[0, 0, 0, 0]}
+                  />
+                  <Bar
+                    dataKey="queda"
+                    name="queda"
+                    stackId="a"
+                    fill="#34d399"
+                    radius={[6, 6, 0, 0]}
+                  />
+                </BarChart>
               ) : (
                 <BarChart data={chart.data} margin={{ left: 0, right: 8 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
