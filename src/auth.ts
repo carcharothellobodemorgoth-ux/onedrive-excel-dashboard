@@ -8,10 +8,11 @@ declare module "next-auth" {
   }
 }
 
-type AppJWT = {
+type TokenBag = {
+  accessToken?: string;
   refreshToken?: string;
+  expiresAt?: number;
   error?: string;
-  sub?: string;
 };
 
 const scopes = [
@@ -26,92 +27,16 @@ const scopes = [
 
 const msaIssuer =
   process.env.AUTH_MICROSOFT_ENTRA_ID_ISSUER ??
+  // Personal MSA tenant GUID (not the "consumers" alias — OIDC issuer must match)
   "https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0";
 
-/** Per-instance cache so large Graph access tokens never enter the session cookie. */
-const accessCache = new Map<
-  string,
-  { accessToken: string; expiresAtMs: number }
->();
-
-function tokenEndpoint(): string {
-  return `${msaIssuer.replace(/\/$/, "")}/oauth2/v2.0/token`;
-}
-
-async function exchangeRefreshToken(
-  refreshToken: string,
-): Promise<
-  | { ok: true; accessToken: string; refreshToken?: string; expiresIn: number }
-  | { ok: false; error: string }
-> {
-  const response = await fetch(tokenEndpoint(), {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: process.env.AUTH_MICROSOFT_ENTRA_ID_ID!,
-      client_secret: process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET!,
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      scope: scopes,
-    }),
-    cache: "no-store",
-  });
-
-  const raw = await response.text();
-  let refreshed: {
-    access_token?: string;
-    refresh_token?: string;
-    expires_in?: number;
-    error?: string;
-    error_description?: string;
-  } = {};
-  try {
-    refreshed = raw ? (JSON.parse(raw) as typeof refreshed) : {};
-  } catch {
-    return {
-      ok: false,
-      error: `Token endpoint non-JSON (${response.status}): ${raw.slice(0, 120)}`,
-    };
+/** issuer ends with /v2.0; token endpoint is /{tenant}/oauth2/v2.0/token (not /v2.0/oauth2/...). */
+function tokenUrlFromIssuer(issuer: string): string {
+  const trimmed = issuer.replace(/\/$/, "");
+  if (trimmed.endsWith("/v2.0")) {
+    return `${trimmed.slice(0, -"/v2.0".length)}/oauth2/v2.0/token`;
   }
-
-  if (!response.ok || !refreshed.access_token) {
-    return {
-      ok: false,
-      error:
-        refreshed.error_description ??
-        refreshed.error ??
-        `Refresh failed (${response.status})`,
-    };
-  }
-
-  return {
-    ok: true,
-    accessToken: refreshed.access_token,
-    refreshToken: refreshed.refresh_token,
-    expiresIn: refreshed.expires_in ?? 3600,
-  };
-}
-
-function cacheAccess(
-  sub: string,
-  accessToken: string,
-  expiresInSec: number,
-): void {
-  accessCache.set(sub, {
-    accessToken,
-    expiresAtMs: Date.now() + Math.max(60, expiresInSec - 60) * 1000,
-  });
-}
-
-function cachedAccess(sub: string | undefined): string | undefined {
-  if (!sub) return undefined;
-  const hit = accessCache.get(sub);
-  if (!hit) return undefined;
-  if (Date.now() >= hit.expiresAtMs) {
-    accessCache.delete(sub);
-    return undefined;
-  }
-  return hit.accessToken;
+  return `${trimmed}/oauth2/v2.0/token`;
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -129,54 +54,99 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
   callbacks: {
     async jwt({ token, account }) {
-      const t = token as typeof token & AppJWT;
-      // Keep only refreshToken in the cookie (MSA access tokens are huge and
-      // truncate Auth.js cookies → Graph "JWT is not well formed").
+      const t = token as typeof token & TokenBag;
+
       if (account) {
-        if (account.refresh_token) {
-          t.refreshToken = account.refresh_token;
-        }
-        if (account.access_token && t.sub) {
-          const expiresIn = account.expires_at
-            ? Math.max(60, account.expires_at - Math.floor(Date.now() / 1000))
-            : 3600;
-          cacheAccess(t.sub, account.access_token, expiresIn);
-        }
+        t.accessToken = account.access_token;
+        t.refreshToken = account.refresh_token;
+        t.expiresAt = account.expires_at;
         t.error = undefined;
         return t;
       }
 
-      if (t.sub && cachedAccess(t.sub)) {
-        t.error = undefined;
+      if (
+        typeof t.expiresAt === "number" &&
+        Date.now() < t.expiresAt * 1000 - 60_000 &&
+        typeof t.accessToken === "string" &&
+        t.accessToken.length > 20
+      ) {
         return t;
       }
 
       if (!t.refreshToken || typeof t.refreshToken !== "string") {
-        return { ...t, error: "RefreshTokenMissing" };
+        return {
+          ...t,
+          accessToken: undefined,
+          error: "RefreshTokenMissing",
+        };
       }
 
-      const exchanged = await exchangeRefreshToken(t.refreshToken);
-      if (!exchanged.ok) {
-        return { ...t, error: `RefreshAccessTokenError:${exchanged.error}` };
-      }
+      try {
+        const response = await fetch(tokenUrlFromIssuer(msaIssuer), {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            client_id: process.env.AUTH_MICROSOFT_ENTRA_ID_ID!,
+            client_secret: process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET!,
+            grant_type: "refresh_token",
+            refresh_token: t.refreshToken,
+            scope: scopes,
+          }),
+          cache: "no-store",
+        });
 
-      if (t.sub) {
-        cacheAccess(t.sub, exchanged.accessToken, exchanged.expiresIn);
+        const raw = await response.text();
+        let refreshed: {
+          access_token?: string;
+          refresh_token?: string;
+          expires_in?: number;
+          error?: string;
+          error_description?: string;
+        } = {};
+        try {
+          refreshed = raw ? (JSON.parse(raw) as typeof refreshed) : {};
+        } catch {
+          return {
+            ...t,
+            accessToken: undefined,
+            error: `RefreshAccessTokenError:non-json:${response.status}`,
+          };
+        }
+
+        if (!response.ok || !refreshed.access_token) {
+          return {
+            ...t,
+            accessToken: undefined,
+            error: `RefreshAccessTokenError:${
+              refreshed.error_description ?? refreshed.error ?? response.status
+            }`,
+          };
+        }
+
+        return {
+          ...t,
+          accessToken: refreshed.access_token,
+          refreshToken: refreshed.refresh_token ?? t.refreshToken,
+          expiresAt: Math.floor(
+            Date.now() / 1000 + (refreshed.expires_in ?? 3600),
+          ),
+          error: undefined,
+        };
+      } catch (e) {
+        return {
+          ...t,
+          accessToken: undefined,
+          error: `RefreshAccessTokenError:${
+            e instanceof Error ? e.message : "unknown"
+          }`,
+        };
       }
-      if (exchanged.refreshToken) {
-        t.refreshToken = exchanged.refreshToken;
-      }
-      t.error = undefined;
-      return t;
     },
     async session({ session, token }) {
-      const t = token as typeof token & AppJWT;
-      session.error =
-        typeof t.error === "string" ? t.error : undefined;
-      const access = cachedAccess(
-        typeof t.sub === "string" ? t.sub : undefined,
-      );
-      session.accessToken = access;
+      const t = token as typeof token & TokenBag;
+      session.accessToken =
+        typeof t.accessToken === "string" ? t.accessToken : undefined;
+      session.error = typeof t.error === "string" ? t.error : undefined;
       return session;
     },
   },

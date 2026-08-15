@@ -14,23 +14,8 @@ async function requireGraphToken() {
       error: NextResponse.json(
         {
           error:
-            "Sesión de Microsoft expirada o incompleta. Cerrá sesión y volvé a entrar.",
+            "Sesión de Microsoft expirada. Cerrá sesión y volvé a entrar.",
           detail: session.error ?? "missing_access_token",
-          code: "reauth_required",
-        },
-        { status: 401 },
-      ),
-    };
-  }
-  if (
-    !session.accessToken.includes(".") ||
-    session.accessToken.length < 20
-  ) {
-    return {
-      error: NextResponse.json(
-        {
-          error:
-            "Token de Microsoft inválido. Cerrá sesión y volvé a entrar.",
           code: "reauth_required",
         },
         { status: 401 },
