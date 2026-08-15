@@ -351,10 +351,20 @@ export function DashboardClient({
             {sheet && !sheetLoading && view && (
               <div className="flex flex-col gap-6">
                 <p className="text-sm text-emerald-300/90">
-                  Periodo: <strong className="text-white">{view.periodLabel}</strong>
+                  Hoy: <strong className="text-white">{view.todayLabel}</strong>
+                  {" · "}
+                  Periodo:{" "}
+                  <strong className="text-white">{view.periodLabel}</strong>
                   {" · "}
                   hoja {sheet.worksheet.name}
                 </p>
+                {!view.inCycle && (
+                  <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+                    La fecha de hoy no cae en el ciclo de la planilla
+                    (ago-2026 → jul-2027). No se asume el primer mes como
+                    actual. Quincenas: 1–15 = 1ª, 16–fin = 2ª.
+                  </div>
+                )}
                 <KpiCards kpis={view.kpis} />
                 <AutoCharts charts={view.charts} />
                 <div className="grid gap-6 lg:grid-cols-2">

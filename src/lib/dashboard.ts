@@ -14,6 +14,8 @@ export type ProyeccionView = {
   kpis: Kpi[];
   charts: ChartSeries[];
   periodLabel: string;
+  todayLabel: string;
+  inCycle: boolean;
   expenseRows: { label: string; value: number }[];
   incomeRows: { label: string; value: number }[];
 };
@@ -104,43 +106,89 @@ const MONTHS_ES = [
 ] as const;
 
 /**
- * Ciclo de la planilla PROYECCIÓN 26-27: ago-2026 … jul-2027.
- * Columna B (index 1) = 1ª quincena ago-2026; cada 2 columnas = 1 mes.
- * Override con EXCEL_CYCLE_START=YYYY-MM (mes calendario del primer bloque).
+ * Ciclo de la planilla: primer mes = ago-2026 … jul-2027 (12 meses × 2 quincenas).
+ * La quincena "actual" se elige con la fecha de hoy del dispositivo:
+ *   días 1–15 → 1ª quincena · días 16–fin → 2ª quincena
+ * Override: NEXT_PUBLIC_EXCEL_CYCLE_START=YYYY-MM
  */
 function cycleStart(): { year: number; month: number } {
-  const raw = process.env.EXCEL_CYCLE_START?.trim(); // e.g. 2026-08
+  const raw =
+    (typeof process !== "undefined" &&
+      (process.env.NEXT_PUBLIC_EXCEL_CYCLE_START ||
+        process.env.EXCEL_CYCLE_START)?.trim()) ||
+    "";
   if (raw && /^\d{4}-\d{2}$/.test(raw)) {
     const [y, m] = raw.split("-").map(Number);
     return { year: y, month: m };
   }
-  return { year: 2026, month: 8 }; // ago 2026
+  return { year: 2026, month: 8 };
 }
 
 function monthsBetween(fromY: number, fromM: number, toY: number, toM: number): number {
   return (toY - fromY) * 12 + (toM - fromM);
 }
 
-/** Columna 1-based de Excel (A=0 en matrix → usamos 1..n como quincenas). */
+function formatToday(d: Date): string {
+  return d.toLocaleDateString("es-AR", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+export type PeriodResolution = {
+  /** 1-based Excel quincena column, or null if today is outside the cycle */
+  col: number | null;
+  periodLabel: string;
+  todayLabel: string;
+  inCycle: boolean;
+  half: 1 | 2;
+};
+
+/** Resolve which quincena column matches "today". Never assumes cycle-start === current month. */
+export function resolvePeriodFromDate(
+  rows: Cell[][],
+  now: Date = new Date(),
+): PeriodResolution {
+  const width = Math.max(1, ...rows.map((r) => r.length));
+  const maxCol = Math.max(1, width - 1);
+  const start = cycleStart();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  const day = now.getDate();
+  const half: 1 | 2 = day <= 15 ? 1 : 2;
+  const todayLabel = formatToday(now);
+
+  const monthOffset = monthsBetween(start.year, start.month, y, m);
+
+  if (monthOffset < 0 || monthOffset > 11) {
+    const end = periodMeta(24); // last month of a full 12-month cycle
+    return {
+      col: null,
+      inCycle: false,
+      half,
+      todayLabel,
+      periodLabel: `Hoy ${todayLabel} está fuera del ciclo ${MONTHS_ES[start.month - 1]} ${start.year} → ${end.monthLabel}`,
+    };
+  }
+
+  const col = Math.min(monthOffset * 2 + (half - 1) + 1, maxCol);
+  const { halfLabel, monthLabel } = periodMeta(col);
+  return {
+    col,
+    inCycle: true,
+    half,
+    todayLabel,
+    periodLabel: `${halfLabel} quincena · ${monthLabel}`,
+  };
+}
+
+/** @deprecated use resolvePeriodFromDate */
 export function detectCurrentQuincenaCol(
   rows: Cell[][],
   now: Date = new Date(),
 ): number {
-  const width = Math.max(1, ...rows.map((r) => r.length));
-  const maxCol = Math.max(1, width - 1);
-
-  const start = cycleStart();
-  const y = now.getFullYear();
-  const m = now.getMonth() + 1; // 1-12
-  const day = now.getDate();
-  const half = day <= 15 ? 0 : 1; // 0 = 1ª quincena, 1 = 2ª
-
-  let monthOffset = monthsBetween(start.year, start.month, y, m);
-  if (monthOffset < 0) monthOffset = 0;
-  if (monthOffset > 11) monthOffset = 11;
-
-  const col = monthOffset * 2 + half + 1; // 1-based quincena col
-  return Math.min(Math.max(col, 1), maxCol);
+  return resolvePeriodFromDate(rows, now).col ?? 1;
 }
 
 function periodMeta(col: number): {
@@ -150,12 +198,12 @@ function periodMeta(col: number): {
   monthIndex: number;
 } {
   const start = cycleStart();
-  const monthIndex = Math.floor((col - 1) / 2); // 0..11 within cycle
+  const monthIndex = Math.floor((col - 1) / 2);
   const halfLabel = (col - 1) % 2 === 0 ? "1ª" : "2ª";
 
-  const absMonth = start.month - 1 + monthIndex; // 0-based from Jan of start year
+  const absMonth = start.month - 1 + monthIndex;
   const year = start.year + Math.floor(absMonth / 12);
-  const calendarMonth = ((absMonth % 12) + 12) % 12; // 0-11
+  const calendarMonth = ((absMonth % 12) + 12) % 12;
   const monthLabel = `${MONTHS_ES[calendarMonth]} ${year}`;
 
   return { halfLabel, monthLabel, year, monthIndex };
@@ -172,7 +220,12 @@ const SKIP = [/^$/i, /^-+$/];
  * Interpreta la hoja PROYECCIÓN 26-27 / 20262027 según la estructura acordada.
  * rows[0] = Excel fila 1 (ya NO se descarta como header).
  */
-export function buildProyeccionView(rows: Cell[][]): ProyeccionView {
+export function buildProyeccionView(
+  rows: Cell[][],
+  now: Date = new Date(),
+): ProyeccionView {
+  const period = resolvePeriodFromDate(rows, now);
+
   if (rows.length < 44) {
     return {
       kpis: [
@@ -184,14 +237,35 @@ export function buildProyeccionView(rows: Cell[][]): ProyeccionView {
         },
       ],
       charts: [],
-      periodLabel: "—",
+      periodLabel: period.periodLabel,
+      todayLabel: period.todayLabel,
+      inCycle: period.inCycle,
       expenseRows: [],
       incomeRows: [],
     };
   }
 
-  const col = detectCurrentQuincenaCol(rows);
-  const periodLabel = quincenaLabel(col);
+  if (!period.inCycle || period.col === null) {
+    return {
+      kpis: [
+        {
+          id: "out",
+          label: "Periodo",
+          value: "Fuera de ciclo",
+          hint: period.periodLabel,
+        },
+      ],
+      charts: [],
+      periodLabel: period.periodLabel,
+      todayLabel: period.todayLabel,
+      inCycle: false,
+      expenseRows: [],
+      incomeRows: [],
+    };
+  }
+
+  const col = period.col;
+  const periodLabel = period.periodLabel;
 
   const ingresos = sumRows(rows, 1, 3, col, SKIP);
   // Gastos principales: después de ingresos hasta antes del neteo (fila 35)
@@ -314,7 +388,15 @@ export function buildProyeccionView(rows: Cell[][]): ProyeccionView {
     ],
   });
 
-  return { kpis, charts, periodLabel, expenseRows, incomeRows };
+  return {
+    kpis,
+    charts,
+    periodLabel,
+    todayLabel: period.todayLabel,
+    inCycle: true,
+    expenseRows,
+    incomeRows,
+  };
 }
 
 /** @deprecated legacy auto-detect — kept unused */
