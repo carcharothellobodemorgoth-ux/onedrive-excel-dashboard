@@ -7,6 +7,7 @@ export type Kpi = {
 
 export type ChartSeries = {
   name: string;
+  kind?: "bar" | "pie";
   data: { label: string; value: number }[];
 };
 
@@ -462,6 +463,7 @@ export function buildProyeccionView(
   if (expenseRows.length > 0) {
     charts.push({
       name: `Gastos · ${periodLabel}`,
+      kind: "pie",
       data: expenseRows.slice(0, 12).map((r) => ({
         label: r.label.slice(0, 28),
         value: r.value,
