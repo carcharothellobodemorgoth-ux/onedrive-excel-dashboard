@@ -518,10 +518,6 @@ export function buildProyeccionView(
     .map((r) => ({ ...r, value: Math.abs(r.value) }))
     .sort((a, b) => b.value - a.value);
 
-  const cardRows = listRowsCols(rows, layout, CARD_ROW_FROM, CARD_ROW_TO, cols, SKIP)
-    .map((r) => ({ ...r, value: Math.abs(r.value) }))
-    .sort((a, b) => b.value - a.value);
-
   const categoryChart = (() => {
     const catMap = new Map<string, number>();
     for (const part of [
@@ -614,16 +610,6 @@ export function buildProyeccionView(
       name: `Categorías · ${periodLabel}`,
       kind: "pie",
       data: categoryChart,
-    });
-  }
-
-  if (cardRows.length > 0) {
-    charts.push({
-      name: `Tarjetas · ${periodLabel}`,
-      data: cardRows.slice(0, 12).map((r) => ({
-        label: r.label.slice(0, 28),
-        value: r.value,
-      })),
     });
   }
 
