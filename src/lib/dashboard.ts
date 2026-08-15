@@ -83,6 +83,24 @@ function rawCategoryAt(rows: Cell[][], excelRow: number): string {
   return String(v).trim();
 }
 
+function discoverCategories(
+  rows: Cell[][],
+  excelFrom: number,
+  excelTo: number,
+  skipLabels: RegExp[] = [],
+): string[] {
+  const cats = new Set<string>();
+  for (let r = excelFrom; r <= excelTo; r++) {
+    const label = labelAt(rows, r);
+    if (!label || skipLabels.some((re) => re.test(label))) continue;
+    // Skip placeholder labels like "Fila 12" from empty A
+    if (/^Fila \d+$/i.test(label)) continue;
+    const cat = rawCategoryAt(rows, r);
+    if (cat) cats.add(cat);
+  }
+  return [...cats];
+}
+
 function listCategoryTotals(
   rows: Cell[][],
   layout: SheetLayout,
@@ -92,24 +110,28 @@ function listCategoryTotals(
   skipLabels: RegExp[] = [],
 ): { label: string; value: number }[] {
   const map = new Map<string, number>();
+  for (const cat of discoverCategories(rows, excelFrom, excelTo, skipLabels)) {
+    map.set(cat, 0);
+  }
 
   for (const q of quincenas) {
     for (let r = excelFrom; r <= excelTo; r++) {
       const label = labelAt(rows, r);
       if (!label || skipLabels.some((re) => re.test(label))) continue;
+      if (/^Fila \d+$/i.test(label)) continue;
       const value = Math.abs(valueAtQuincena(rows, layout, r, q));
       if (value === 0) continue;
       const cat = layout.hasCategory
         ? rawCategoryAt(rows, r) || "Sin categoría"
         : "Sin categoría";
+      if (!map.has(cat)) map.set(cat, 0);
       map.set(cat, (map.get(cat) ?? 0) + value);
     }
   }
 
   return [...map.entries()]
     .map(([label, value]) => ({ label, value }))
-    .filter((r) => r.value > 0)
-    .sort((a, b) => b.value - a.value);
+    .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label, "es"));
 }
 
 /**
@@ -497,8 +519,7 @@ export function buildProyeccionView(
     }
     return [...catMap.entries()]
       .map(([label, value]) => ({ label, value }))
-      .filter((r) => r.value > 0)
-      .sort((a, b) => b.value - a.value);
+      .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label, "es"));
   })();
 
   const kpis: Kpi[] = [
@@ -577,7 +598,7 @@ export function buildProyeccionView(
   if (layout.hasCategory && categoryChart.length > 0) {
     charts.push({
       name: `Categorías · ${periodLabel}`,
-      kind: "pie",
+      // Barras: así se ven también categorías en $0 este periodo
       data: categoryChart,
     });
   }
