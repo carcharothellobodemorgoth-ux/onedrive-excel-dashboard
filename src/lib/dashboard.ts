@@ -375,6 +375,10 @@ export function buildProyeccionView(
   const lastCol = cols[cols.length - 1];
   const periodLabel = resolved.periodLabel;
 
+  // Tarjetas: AMEX GOLD / PLATINUM / PALACIO (filas 23–25 en la planilla)
+  const CARD_ROW_FROM = 23;
+  const CARD_ROW_TO = 25;
+
   const ingresos = sumRowsCols(rows, 1, 3, cols, SKIP);
   const gastos = sumRowsCols(rows, 4, 34, cols, [
     ...SKIP,
@@ -382,7 +386,7 @@ export function buildProyeccionView(
     /^lo que queda$/i,
     /^transf/i,
   ]);
-  const tarjetas = sumRowsCols(rows, 21, 28, cols, SKIP);
+  const tarjetas = sumRowsCols(rows, CARD_ROW_FROM, CARD_ROW_TO, cols, SKIP);
   const gastosPost = sumRowsCols(rows, 37, 41, cols, SKIP);
   const neteo = valueAt(rows, 35, lastCol);
   const balanceFinal = valueAt(rows, 44, lastCol);
@@ -400,7 +404,7 @@ export function buildProyeccionView(
     .map((r) => ({ ...r, value: Math.abs(r.value) }))
     .sort((a, b) => b.value - a.value);
 
-  const cardRows = listRowsCols(rows, 21, 28, cols, SKIP)
+  const cardRows = listRowsCols(rows, CARD_ROW_FROM, CARD_ROW_TO, cols, SKIP)
     .map((r) => ({ ...r, value: Math.abs(r.value) }))
     .sort((a, b) => b.value - a.value);
 
@@ -409,7 +413,7 @@ export function buildProyeccionView(
       id: "tarjetas",
       label: "Gasto en tarjeta",
       value: formatMoney(Math.abs(tarjetas)),
-      hint: `Filas 21–28 · ${periodLabel}`,
+      hint: `Filas ${CARD_ROW_FROM}–${CARD_ROW_TO} · ${periodLabel}`,
     },
     {
       id: "ingresos",
