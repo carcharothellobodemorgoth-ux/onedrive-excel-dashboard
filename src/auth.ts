@@ -22,6 +22,7 @@ const scopes = [
   "offline_access",
   "User.Read",
   "Files.Read",
+  "Files.Read.All",
 ].join(" ");
 
 export const { handlers, auth, signIn, signOut } = NextAuth({

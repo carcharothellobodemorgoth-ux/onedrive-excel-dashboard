@@ -147,6 +147,60 @@ function isExcelName(name?: string): boolean {
   return /\.(xlsx|xlsm|xls)$/i.test(name ?? "") || /proyecci[oó]n/i.test(name ?? "");
 }
 
+type SharedDriveItem = DriveItem & {
+  remoteItem?: {
+    id?: string;
+    name?: string;
+    webUrl?: string;
+    lastModifiedDateTime?: string;
+    file?: unknown;
+    folder?: unknown;
+    parentReference?: { driveId?: string; path?: string };
+  };
+};
+
+/** sharedWithMe returns a local stub; workbook APIs need remoteItem id + driveId. */
+function normalizeSharedItem(raw: SharedDriveItem): DriveItem | null {
+  const remote = raw.remoteItem;
+  if (remote?.id && remote.parentReference?.driveId) {
+    return {
+      id: remote.id,
+      name: remote.name ?? raw.name,
+      webUrl: remote.webUrl ?? raw.webUrl,
+      lastModifiedDateTime:
+        remote.lastModifiedDateTime ?? raw.lastModifiedDateTime,
+      parentReference: remote.parentReference,
+    };
+  }
+  if (raw.id && raw.parentReference?.driveId) {
+    return raw;
+  }
+  return null;
+}
+
+async function collectSharedExcel(
+  accessToken: string,
+): Promise<DriveItem[]> {
+  const out: DriveItem[] = [];
+  const paths = [
+    `/me/drive/sharedWithMe?$top=100&$select=id,name,webUrl,lastModifiedDateTime,remoteItem,file,folder`,
+    `/me/drive/sharedWithMe?allowexternal=true&$top=100`,
+  ];
+  for (const path of paths) {
+    const data = await graphFetchOk<{ value: SharedDriveItem[] }>(
+      accessToken,
+      path,
+    );
+    for (const raw of data?.value ?? []) {
+      const name = raw.remoteItem?.name ?? raw.name;
+      if (!isExcelName(name) && !isExcelName(raw.name)) continue;
+      const normalized = normalizeSharedItem(raw);
+      if (normalized) out.push(normalized);
+    }
+  }
+  return out;
+}
+
 async function collectExcelCandidates(
   accessToken: string,
 ): Promise<DriveItem[]> {
@@ -164,6 +218,8 @@ async function collectExcelCandidates(
     const data = await graphFetchOk<{ value: DriveItem[] }>(accessToken, path);
     if (data?.value) pools.push(...data.value);
   }
+
+  pools.push(...(await collectSharedExcel(accessToken)));
 
   const byId = new Map<string, DriveItem>();
   for (const it of pools) {
@@ -185,8 +241,45 @@ export async function resolveExcelItemId(
   const configuredPath =
     process.env.EXCEL_FILE_PATH?.trim() ||
     `${folder}/${fileName.replace(/\.xlsx$/i, "")}.xlsx`;
+  const needle = fileName.replace(/\.xlsx$/i, "").toLowerCase();
 
-  // 1) Explicit path (best for personal OneDrive)
+  // 0) Preferred selection from UI (may be a shared remote item)
+  if (preferredItemId && preferredDriveId) {
+    const hit = await tryDriveItem(
+      accessToken,
+      preferredDriveId,
+      preferredItemId,
+      "user-selected",
+    );
+    if (hit) return { ok: true, ...hit };
+  }
+
+  // 1) Shared with me FIRST (common for personal OneDrive links you can open but don't own)
+  const shared = await collectSharedExcel(accessToken);
+  const sharedHit = shared.find((c) =>
+    (c.name ?? "").toLowerCase().includes(needle),
+  ) ?? shared.find((c) =>
+    /26[\s_-]?27/.test(c.name ?? "") && /proyecci/i.test(c.name ?? ""),
+  );
+  if (sharedHit?.parentReference?.driveId) {
+    const hit = await tryDriveItem(
+      accessToken,
+      sharedHit.parentReference.driveId,
+      sharedHit.id,
+      "sharedWithMe",
+    );
+    if (hit) return { ok: true, ...hit };
+    // remote ids from sharedWithMe are often already valid
+    return {
+      ok: true,
+      itemId: sharedHit.id,
+      driveId: sharedHit.parentReference.driveId,
+      item: sharedHit,
+      strategy: "sharedWithMe-direct",
+    };
+  }
+
+  // 2) Explicit path on own drive
   const pathVariants = Array.from(
     new Set([
       configuredPath,
@@ -203,61 +296,31 @@ export async function resolveExcelItemId(
     if (hit) return { ok: true, ...hit };
   }
 
-  // 2) Preferred selection from UI
-  if (preferredItemId) {
-    const driveId =
-      preferredDriveId || (await getPrimaryDriveId(accessToken));
-    if (driveId) {
-      const hit = await tryDriveItem(
-        accessToken,
-        driveId,
-        preferredItemId,
-        "user-selected",
-      );
-      if (hit) return { ok: true, ...hit };
-    }
-  }
-
-  // 3) Candidates from folder/search — pick by name
+  // 3) Own drive + shared candidates — pick by name
   const candidates = await collectExcelCandidates(accessToken);
-  const needle = fileName.replace(/\.xlsx$/i, "").toLowerCase();
-  const named = candidates.find((c) =>
-    (c.name ?? "").toLowerCase().includes(needle),
-  );
-  if (named) {
-    const driveId =
-      named.parentReference?.driveId || (await getPrimaryDriveId(accessToken));
-    if (driveId) {
-      const hit = await tryDriveItem(
-        accessToken,
-        driveId,
-        named.id,
-        "name-match",
-      );
-      if (hit) return { ok: true, ...hit };
-    }
-  }
-
-  if (candidates.length === 1) {
-    const only = candidates[0];
-    const driveId =
-      only.parentReference?.driveId || (await getPrimaryDriveId(accessToken));
-    if (driveId) {
-      const hit = await tryDriveItem(
-        accessToken,
-        driveId,
-        only.id,
-        "single-candidate",
-      );
-      if (hit) return { ok: true, ...hit };
-    }
+  const named =
+    candidates.find((c) => (c.name ?? "").toLowerCase().includes(needle)) ??
+    candidates.find(
+      (c) =>
+        /26[\s_-]?27/.test(c.name ?? "") && /proyecci/i.test(c.name ?? ""),
+    );
+  if (named?.parentReference?.driveId) {
+    return {
+      ok: true,
+      itemId: named.id,
+      driveId: named.parentReference.driveId,
+      item: named,
+      strategy: "name-match",
+    };
   }
 
   return {
     ok: false,
-    candidates,
+    candidates: [...shared, ...candidates].filter(
+      (c, i, arr) => arr.findIndex((x) => x.id === c.id) === i,
+    ),
     message:
-      "No encontré PROYECCIÓN 26-27 en la carpeta Proyecciones. Elegí el archivo de la lista.",
+      "No encontré PROYECCIÓN 26-27 en tu OneDrive ni en Compartido conmigo. Si es de otra persona, pedile que te la comparta (puede editar) o elegí un archivo de la lista. También cerrá sesión y volvé a entrar para aceptar el permiso Files.Read.All.",
   };
 }
 
