@@ -3,8 +3,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AutoCharts } from "@/components/AutoCharts";
 import { KpiCards } from "@/components/KpiCards";
+import { PeriodSelector } from "@/components/PeriodSelector";
 import { SheetTable } from "@/components/SheetTable";
-import { buildProyeccionView } from "@/lib/dashboard";
+import {
+  buildProyeccionView,
+  DEFAULT_PERIOD_SELECTION,
+  maxDataCol,
+  type PeriodSelection,
+} from "@/lib/dashboard";
 
 type Worksheet = { id: string; name: string; position: number };
 type DriveItem = {
@@ -22,6 +28,26 @@ type SheetPayload = {
 
 const ITEM_KEY = "excel-dashboard-item-id";
 const DRIVE_KEY = "excel-dashboard-drive-id";
+const PERIOD_KEY = "excel-dashboard-period";
+
+function loadPeriodSelection(): PeriodSelection {
+  if (typeof window === "undefined") return DEFAULT_PERIOD_SELECTION;
+  try {
+    const raw = localStorage.getItem(PERIOD_KEY);
+    if (!raw) return DEFAULT_PERIOD_SELECTION;
+    const parsed = JSON.parse(raw) as PeriodSelection;
+    if (
+      parsed?.mode === "quincena" ||
+      parsed?.mode === "mes" ||
+      parsed?.mode === "custom"
+    ) {
+      return parsed;
+    }
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_PERIOD_SELECTION;
+}
 
 export function DashboardClient({
   userName,
@@ -42,6 +68,11 @@ export function DashboardClient({
     "https://1drv.ms/x/c/d883d00740abbada/IQDVZuw8RO2ZR4CJqAH8k6nyAStmn-NqhF2_OUAcEu3D3_M?e=76bLdx",
   );
   const [shareBusy, setShareBusy] = useState(false);
+  const [period, setPeriod] = useState<PeriodSelection>(DEFAULT_PERIOD_SELECTION);
+
+  useEffect(() => {
+    setPeriod(loadPeriodSelection());
+  }, []);
 
   const applySummary = useCallback((data: {
     item: DriveItem;
@@ -180,9 +211,11 @@ export function DashboardClient({
   }, [activeId, itemId, driveId, loadSheet]);
 
   const view = useMemo(
-    () => (sheet ? buildProyeccionView(sheet.rows) : null),
-    [sheet],
+    () => (sheet ? buildProyeccionView(sheet.rows, period) : null),
+    [sheet, period],
   );
+
+  const periodMaxCol = sheet ? maxDataCol(sheet.rows) : 24;
 
   const detailHeaders = ["Imputación", "Monto"];
   const incomeTableRows =
@@ -350,6 +383,16 @@ export function DashboardClient({
 
             {sheet && !sheetLoading && view && (
               <div className="flex flex-col gap-6">
+                <PeriodSelector
+                  value={period}
+                  maxCol={periodMaxCol}
+                  onChange={(next) => {
+                    setPeriod(next);
+                    if (typeof window !== "undefined") {
+                      localStorage.setItem(PERIOD_KEY, JSON.stringify(next));
+                    }
+                  }}
+                />
                 <p className="text-sm text-emerald-300/90">
                   Hoy: <strong className="text-white">{view.todayLabel}</strong>
                   {" · "}
@@ -361,8 +404,8 @@ export function DashboardClient({
                 {!view.inCycle && (
                   <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
                     La fecha de hoy no cae en el ciclo de la planilla
-                    (ago-2026 → jul-2027). No se asume el primer mes como
-                    actual. Quincenas: 1–15 = 1ª, 16–fin = 2ª.
+                    (ago-2026 → jul-2027). Elegí otra quincena/mes en el selector
+                    o un rango custom. Quincenas: 1–15 = 1ª, 16–fin = 2ª.
                   </div>
                 )}
                 <KpiCards kpis={view.kpis} />
@@ -379,7 +422,7 @@ export function DashboardClient({
                   </section>
                   <section>
                     <h2 className="mb-3 text-lg font-semibold text-white">
-                      Gastos de la quincena
+                      Gastos del periodo
                     </h2>
                     <SheetTable
                       headers={detailHeaders}

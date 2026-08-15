@@ -20,6 +20,13 @@ export type ProyeccionView = {
   incomeRows: { label: string; value: number }[];
 };
 
+export type PeriodMode = "quincena" | "mes" | "custom";
+
+export type PeriodSelection =
+  | { mode: "quincena"; col: number | "actual" }
+  | { mode: "mes"; monthIndex: number | "actual" }
+  | { mode: "custom"; fromCol: number; toCol: number };
+
 type Cell = string | number | boolean | null;
 
 function isNumber(v: Cell): v is number {
@@ -56,38 +63,42 @@ function valueAt(rows: Cell[][], excelRow: number, col: number): number {
   return toNumber(rows[excelRow - 1]?.[col] ?? null) ?? 0;
 }
 
-function sumRows(
+function sumRowsCols(
   rows: Cell[][],
   excelFrom: number,
   excelTo: number,
-  col: number,
+  cols: number[],
   skipLabels: RegExp[] = [],
 ): number {
   let sum = 0;
-  for (let r = excelFrom; r <= excelTo; r++) {
-    const label = labelAt(rows, r);
-    if (!label || skipLabels.some((re) => re.test(label))) continue;
-    sum += valueAt(rows, r, col);
+  for (const col of cols) {
+    for (let r = excelFrom; r <= excelTo; r++) {
+      const label = labelAt(rows, r);
+      if (!label || skipLabels.some((re) => re.test(label))) continue;
+      sum += valueAt(rows, r, col);
+    }
   }
   return sum;
 }
 
-function listRows(
+function listRowsCols(
   rows: Cell[][],
   excelFrom: number,
   excelTo: number,
-  col: number,
+  cols: number[],
   skipLabels: RegExp[] = [],
 ): { label: string; value: number }[] {
-  const out: { label: string; value: number }[] = [];
-  for (let r = excelFrom; r <= excelTo; r++) {
-    const label = labelAt(rows, r);
-    if (!label || skipLabels.some((re) => re.test(label))) continue;
-    const value = valueAt(rows, r, col);
-    if (value === 0) continue;
-    out.push({ label, value });
+  const map = new Map<string, number>();
+  for (const col of cols) {
+    for (let r = excelFrom; r <= excelTo; r++) {
+      const label = labelAt(rows, r);
+      if (!label || skipLabels.some((re) => re.test(label))) continue;
+      const value = valueAt(rows, r, col);
+      if (value === 0) continue;
+      map.set(label, (map.get(label) ?? 0) + value);
+    }
   }
-  return out;
+  return [...map.entries()].map(([label, value]) => ({ label, value }));
 }
 
 const MONTHS_ES = [
@@ -105,12 +116,6 @@ const MONTHS_ES = [
   "dic",
 ] as const;
 
-/**
- * Ciclo de la planilla: primer mes = ago-2026 … jul-2027 (12 meses × 2 quincenas).
- * La quincena "actual" se elige con la fecha de hoy del dispositivo:
- *   días 1–15 → 1ª quincena · días 16–fin → 2ª quincena
- * Override: NEXT_PUBLIC_EXCEL_CYCLE_START=YYYY-MM
- */
 function cycleStart(): { year: number; month: number } {
   const raw =
     (typeof process !== "undefined" &&
@@ -136,16 +141,57 @@ function formatToday(d: Date): string {
   });
 }
 
+export function periodMeta(col: number): {
+  halfLabel: string;
+  monthLabel: string;
+  year: number;
+  monthIndex: number;
+} {
+  const start = cycleStart();
+  const monthIndex = Math.floor((col - 1) / 2);
+  const halfLabel = (col - 1) % 2 === 0 ? "1ª" : "2ª";
+  const absMonth = start.month - 1 + monthIndex;
+  const year = start.year + Math.floor(absMonth / 12);
+  const calendarMonth = ((absMonth % 12) + 12) % 12;
+  const monthLabel = `${MONTHS_ES[calendarMonth]} ${year}`;
+  return { halfLabel, monthLabel, year, monthIndex };
+}
+
+export function quincenaLabel(col: number): string {
+  const { halfLabel, monthLabel } = periodMeta(col);
+  return `${halfLabel} quincena · ${monthLabel}`;
+}
+
+export function monthLabelFromIndex(monthIndex: number): string {
+  return periodMeta(monthIndex * 2 + 1).monthLabel;
+}
+
+export type PeriodOption = { value: number; label: string };
+
+export function listQuincenaOptions(maxCol = 24): PeriodOption[] {
+  const n = Math.min(maxCol, 24);
+  return Array.from({ length: n }, (_, i) => {
+    const col = i + 1;
+    return { value: col, label: quincenaLabel(col) };
+  });
+}
+
+export function listMonthOptions(): PeriodOption[] {
+  return Array.from({ length: 12 }, (_, monthIndex) => ({
+    value: monthIndex,
+    label: monthLabelFromIndex(monthIndex),
+  }));
+}
+
 export type PeriodResolution = {
-  /** 1-based Excel quincena column, or null if today is outside the cycle */
   col: number | null;
   periodLabel: string;
   todayLabel: string;
   inCycle: boolean;
   half: 1 | 2;
+  monthIndex: number | null;
 };
 
-/** Resolve which quincena column matches "today". Never assumes cycle-start === current month. */
 export function resolvePeriodFromDate(
   rows: Cell[][],
   now: Date = new Date(),
@@ -158,15 +204,15 @@ export function resolvePeriodFromDate(
   const day = now.getDate();
   const half: 1 | 2 = day <= 15 ? 1 : 2;
   const todayLabel = formatToday(now);
-
   const monthOffset = monthsBetween(start.year, start.month, y, m);
 
   if (monthOffset < 0 || monthOffset > 11) {
-    const end = periodMeta(24); // last month of a full 12-month cycle
+    const end = periodMeta(24);
     return {
       col: null,
       inCycle: false,
       half,
+      monthIndex: null,
       todayLabel,
       periodLabel: `Hoy ${todayLabel} está fuera del ciclo ${MONTHS_ES[start.month - 1]} ${start.year} → ${end.monthLabel}`,
     };
@@ -178,12 +224,12 @@ export function resolvePeriodFromDate(
     col,
     inCycle: true,
     half,
+    monthIndex: monthOffset,
     todayLabel,
     periodLabel: `${halfLabel} quincena · ${monthLabel}`,
   };
 }
 
-/** @deprecated use resolvePeriodFromDate */
 export function detectCurrentQuincenaCol(
   rows: Cell[][],
   now: Date = new Date(),
@@ -191,40 +237,101 @@ export function detectCurrentQuincenaCol(
   return resolvePeriodFromDate(rows, now).col ?? 1;
 }
 
-function periodMeta(col: number): {
-  halfLabel: string;
-  monthLabel: string;
-  year: number;
-  monthIndex: number;
-} {
-  const start = cycleStart();
-  const monthIndex = Math.floor((col - 1) / 2);
-  const halfLabel = (col - 1) % 2 === 0 ? "1ª" : "2ª";
-
-  const absMonth = start.month - 1 + monthIndex;
-  const year = start.year + Math.floor(absMonth / 12);
-  const calendarMonth = ((absMonth % 12) + 12) % 12;
-  const monthLabel = `${MONTHS_ES[calendarMonth]} ${year}`;
-
-  return { halfLabel, monthLabel, year, monthIndex };
+export function maxDataCol(rows: Cell[][]): number {
+  const width = Math.max(1, ...rows.map((r) => r.length));
+  return Math.max(1, Math.min(24, width - 1));
 }
 
-function quincenaLabel(col: number): string {
-  const { halfLabel, monthLabel } = periodMeta(col);
-  return `${halfLabel} quincena · ${monthLabel}`;
+export function resolveSelectionCols(
+  rows: Cell[][],
+  selection: PeriodSelection,
+  now: Date = new Date(),
+): { cols: number[]; periodLabel: string; todayLabel: string; inCycle: boolean } {
+  const today = resolvePeriodFromDate(rows, now);
+  const maxCol = maxDataCol(rows);
+
+  if (selection.mode === "quincena") {
+    if (selection.col === "actual") {
+      if (!today.inCycle || today.col === null) {
+        return {
+          cols: [],
+          periodLabel: today.periodLabel,
+          todayLabel: today.todayLabel,
+          inCycle: false,
+        };
+      }
+      return {
+        cols: [today.col],
+        periodLabel: today.periodLabel,
+        todayLabel: today.todayLabel,
+        inCycle: true,
+      };
+    }
+    const col = Math.min(Math.max(selection.col, 1), maxCol);
+    return {
+      cols: [col],
+      periodLabel: quincenaLabel(col),
+      todayLabel: today.todayLabel,
+      inCycle: true,
+    };
+  }
+
+  if (selection.mode === "mes") {
+    let monthIndex: number;
+    if (selection.monthIndex === "actual") {
+      if (!today.inCycle || today.monthIndex === null) {
+        return {
+          cols: [],
+          periodLabel: today.periodLabel,
+          todayLabel: today.todayLabel,
+          inCycle: false,
+        };
+      }
+      monthIndex = today.monthIndex;
+    } else {
+      monthIndex = Math.min(Math.max(selection.monthIndex, 0), 11);
+    }
+    const c1 = monthIndex * 2 + 1;
+    const c2 = monthIndex * 2 + 2;
+    const cols = [c1, c2].filter((c) => c <= maxCol);
+    return {
+      cols,
+      periodLabel: `Mes · ${monthLabelFromIndex(monthIndex)}`,
+      todayLabel: today.todayLabel,
+      inCycle: true,
+    };
+  }
+
+  let from = Math.min(selection.fromCol, selection.toCol);
+  let to = Math.max(selection.fromCol, selection.toCol);
+  from = Math.min(Math.max(from, 1), maxCol);
+  to = Math.min(Math.max(to, 1), maxCol);
+  const cols = Array.from({ length: to - from + 1 }, (_, i) => from + i);
+  const label =
+    from === to
+      ? quincenaLabel(from)
+      : `${quincenaLabel(from)} → ${quincenaLabel(to)}`;
+  return {
+    cols,
+    periodLabel: `Custom · ${label}`,
+    todayLabel: today.todayLabel,
+    inCycle: true,
+  };
 }
 
 const SKIP = [/^$/i, /^-+$/];
 
-/**
- * Interpreta la hoja PROYECCIÓN 26-27 / 20262027 según la estructura acordada.
- * rows[0] = Excel fila 1 (ya NO se descarta como header).
- */
+export const DEFAULT_PERIOD_SELECTION: PeriodSelection = {
+  mode: "quincena",
+  col: "actual",
+};
+
 export function buildProyeccionView(
   rows: Cell[][],
+  selection: PeriodSelection = DEFAULT_PERIOD_SELECTION,
   now: Date = new Date(),
 ): ProyeccionView {
-  const period = resolvePeriodFromDate(rows, now);
+  const resolved = resolveSelectionCols(rows, selection, now);
 
   if (rows.length < 44) {
     return {
@@ -237,63 +344,63 @@ export function buildProyeccionView(
         },
       ],
       charts: [],
-      periodLabel: period.periodLabel,
-      todayLabel: period.todayLabel,
-      inCycle: period.inCycle,
+      periodLabel: resolved.periodLabel,
+      todayLabel: resolved.todayLabel,
+      inCycle: resolved.inCycle,
       expenseRows: [],
       incomeRows: [],
     };
   }
 
-  if (!period.inCycle || period.col === null) {
+  if (!resolved.inCycle || resolved.cols.length === 0) {
     return {
       kpis: [
         {
           id: "out",
           label: "Periodo",
           value: "Fuera de ciclo",
-          hint: period.periodLabel,
+          hint: resolved.periodLabel,
         },
       ],
       charts: [],
-      periodLabel: period.periodLabel,
-      todayLabel: period.todayLabel,
+      periodLabel: resolved.periodLabel,
+      todayLabel: resolved.todayLabel,
       inCycle: false,
       expenseRows: [],
       incomeRows: [],
     };
   }
 
-  const col = period.col;
-  const periodLabel = period.periodLabel;
+  const cols = resolved.cols;
+  const lastCol = cols[cols.length - 1];
+  const periodLabel = resolved.periodLabel;
 
-  const ingresos = sumRows(rows, 1, 3, col, SKIP);
-  // Gastos principales: después de ingresos hasta antes del neteo (fila 35)
-  const gastos = sumRows(rows, 4, 34, col, [
+  const ingresos = sumRowsCols(rows, 1, 3, cols, SKIP);
+  const gastos = sumRowsCols(rows, 4, 34, cols, [
     ...SKIP,
     /^resta$/i,
     /^lo que queda$/i,
     /^transf/i,
   ]);
-  const tarjetas = sumRows(rows, 21, 28, col, SKIP);
-  const neteo = valueAt(rows, 35, col);
-  const gastosPost = sumRows(rows, 37, 41, col, SKIP);
-  const balanceFinal = valueAt(rows, 44, col);
+  const tarjetas = sumRowsCols(rows, 21, 28, cols, SKIP);
+  const gastosPost = sumRowsCols(rows, 37, 41, cols, SKIP);
+  const neteo = valueAt(rows, 35, lastCol);
+  const balanceFinal = valueAt(rows, 44, lastCol);
 
-  const incomeRows = listRows(rows, 1, 3, col, SKIP);
-  const cardRows = listRows(rows, 21, 28, col, SKIP).map((r) => ({
-    ...r,
-    value: Math.abs(r.value),
-  }));
+  const incomeRows = listRowsCols(rows, 1, 3, cols, SKIP);
   const expenseRows = [
-    ...listRows(rows, 4, 34, col, [
+    ...listRowsCols(rows, 4, 34, cols, [
       ...SKIP,
       /^resta$/i,
       /^lo que queda$/i,
       /^transf/i,
     ]),
-    ...listRows(rows, 37, 41, col, SKIP),
+    ...listRowsCols(rows, 37, 41, cols, SKIP),
   ]
+    .map((r) => ({ ...r, value: Math.abs(r.value) }))
+    .sort((a, b) => b.value - a.value);
+
+  const cardRows = listRowsCols(rows, 21, 28, cols, SKIP)
     .map((r) => ({ ...r, value: Math.abs(r.value) }))
     .sort((a, b) => b.value - a.value);
 
@@ -320,7 +427,7 @@ export function buildProyeccionView(
       id: "neteo",
       label: labelAt(rows, 35) || "Neteo",
       value: formatMoney(neteo),
-      hint: "Fila 35",
+      hint: `Fila 35 · fin del periodo (${quincenaLabel(lastCol)})`,
     },
     {
       id: "gastos-post",
@@ -332,7 +439,7 @@ export function buildProyeccionView(
       id: "final",
       label: labelAt(rows, 44) || "Balance final",
       value: formatMoney(balanceFinal),
-      hint: "Fila 44 · lo que queda",
+      hint: `Fila 44 · fin del periodo (${quincenaLabel(lastCol)})`,
     },
   ];
 
@@ -341,12 +448,10 @@ export function buildProyeccionView(
   if (cardRows.length > 0) {
     charts.push({
       name: `Tarjetas · ${periodLabel}`,
-      data: cardRows
-        .sort((a, b) => b.value - a.value)
-        .map((r) => ({
-          label: r.label.slice(0, 28),
-          value: r.value,
-        })),
+      data: cardRows.slice(0, 12).map((r) => ({
+        label: r.label.slice(0, 28),
+        value: r.value,
+      })),
     });
   }
 
@@ -360,7 +465,6 @@ export function buildProyeccionView(
     });
   }
 
-  // Evolución balance final (fila 44) por quincena
   const width = Math.max(...rows.map((r) => r.length), 1);
   const balanceSeries: { label: string; value: number }[] = [];
   for (let c = 1; c < width; c++) {
@@ -392,17 +496,9 @@ export function buildProyeccionView(
     kpis,
     charts,
     periodLabel,
-    todayLabel: period.todayLabel,
+    todayLabel: resolved.todayLabel,
     inCycle: true,
     expenseRows,
     incomeRows,
   };
-}
-
-/** @deprecated legacy auto-detect — kept unused */
-export function buildKpis(): Kpi[] {
-  return [];
-}
-export function buildCharts(): ChartSeries[] {
-  return [];
 }
