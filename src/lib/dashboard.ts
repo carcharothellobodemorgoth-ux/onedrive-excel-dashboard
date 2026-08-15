@@ -512,15 +512,6 @@ export function buildProyeccionView(
     });
   }
 
-  charts.push({
-    name: `Ingresos vs gastos · ${periodLabel}`,
-    data: [
-      { label: "Ingresos", value: ingresos },
-      { label: "Gastos", value: Math.abs(gastos) },
-      { label: "Post", value: Math.abs(gastosPost) },
-    ],
-  });
-
   return {
     kpis,
     charts,
