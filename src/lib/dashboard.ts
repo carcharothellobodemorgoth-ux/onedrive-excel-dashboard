@@ -88,31 +88,82 @@ function listRows(
   return out;
 }
 
-/** Rightmost quincena column that has meaningful numbers (prefer balance row 44). */
-export function detectCurrentQuincenaCol(rows: Cell[][]): number {
-  if (rows.length === 0) return 1;
-  const width = Math.max(...rows.map((r) => r.length), 1);
+const MONTHS_ES = [
+  "ene",
+  "feb",
+  "mar",
+  "abr",
+  "may",
+  "jun",
+  "jul",
+  "ago",
+  "sep",
+  "oct",
+  "nov",
+  "dic",
+] as const;
 
-  for (let col = width - 1; col >= 1; col--) {
-    const balance = toNumber(rows[43]?.[col] ?? null); // Excel row 44
-    if (balance !== null) return col;
+/**
+ * Ciclo de la planilla PROYECCIÓN 26-27: ago-2026 … jul-2027.
+ * Columna B (index 1) = 1ª quincena ago-2026; cada 2 columnas = 1 mes.
+ * Override con EXCEL_CYCLE_START=YYYY-MM (mes calendario del primer bloque).
+ */
+function cycleStart(): { year: number; month: number } {
+  const raw = process.env.EXCEL_CYCLE_START?.trim(); // e.g. 2026-08
+  if (raw && /^\d{4}-\d{2}$/.test(raw)) {
+    const [y, m] = raw.split("-").map(Number);
+    return { year: y, month: m };
   }
+  return { year: 2026, month: 8 }; // ago 2026
+}
 
-  for (let col = width - 1; col >= 1; col--) {
-    let hits = 0;
-    for (const excelRow of [1, 2, 3, 35, 44]) {
-      if (toNumber(rows[excelRow - 1]?.[col] ?? null) !== null) hits++;
-    }
-    if (hits >= 1) return col;
-  }
+function monthsBetween(fromY: number, fromM: number, toY: number, toM: number): number {
+  return (toY - fromY) * 12 + (toM - fromM);
+}
 
-  return 1;
+/** Columna 1-based de Excel (A=0 en matrix → usamos 1..n como quincenas). */
+export function detectCurrentQuincenaCol(
+  rows: Cell[][],
+  now: Date = new Date(),
+): number {
+  const width = Math.max(1, ...rows.map((r) => r.length));
+  const maxCol = Math.max(1, width - 1);
+
+  const start = cycleStart();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1; // 1-12
+  const day = now.getDate();
+  const half = day <= 15 ? 0 : 1; // 0 = 1ª quincena, 1 = 2ª
+
+  let monthOffset = monthsBetween(start.year, start.month, y, m);
+  if (monthOffset < 0) monthOffset = 0;
+  if (monthOffset > 11) monthOffset = 11;
+
+  const col = monthOffset * 2 + half + 1; // 1-based quincena col
+  return Math.min(Math.max(col, 1), maxCol);
+}
+
+function periodMeta(col: number): {
+  halfLabel: string;
+  monthLabel: string;
+  year: number;
+  monthIndex: number;
+} {
+  const start = cycleStart();
+  const monthIndex = Math.floor((col - 1) / 2); // 0..11 within cycle
+  const halfLabel = (col - 1) % 2 === 0 ? "1ª" : "2ª";
+
+  const absMonth = start.month - 1 + monthIndex; // 0-based from Jan of start year
+  const year = start.year + Math.floor(absMonth / 12);
+  const calendarMonth = ((absMonth % 12) + 12) % 12; // 0-11
+  const monthLabel = `${MONTHS_ES[calendarMonth]} ${year}`;
+
+  return { halfLabel, monthLabel, year, monthIndex };
 }
 
 function quincenaLabel(col: number): string {
-  const monthIndex = Math.floor((col - 1) / 2); // 0-based month block
-  const half = (col - 1) % 2 === 0 ? "1ª" : "2ª";
-  return `${half} quincena · mes ${monthIndex + 1}`;
+  const { halfLabel, monthLabel } = periodMeta(col);
+  return `${halfLabel} quincena · ${monthLabel}`;
 }
 
 const SKIP = [/^$/i, /^-+$/];
@@ -241,7 +292,11 @@ export function buildProyeccionView(rows: Cell[][]): ProyeccionView {
   for (let c = 1; c < width; c++) {
     const v = toNumber(rows[43]?.[c] ?? null);
     if (v === null) continue;
-    balanceSeries.push({ label: `Q${c}`, value: v });
+    const { halfLabel, monthLabel } = periodMeta(c);
+    balanceSeries.push({
+      label: `${halfLabel} ${monthLabel}`,
+      value: v,
+    });
   }
   if (balanceSeries.length > 1) {
     charts.push({
