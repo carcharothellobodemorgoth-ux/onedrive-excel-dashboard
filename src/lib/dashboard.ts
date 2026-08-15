@@ -15,6 +15,8 @@ export type ChartSeries = {
     value?: number;
     gastado?: number;
     queda?: number;
+    /** Excel column index (1-based) for clickable history bars */
+    col?: number;
   }[];
 };
 
@@ -457,32 +459,12 @@ export function buildProyeccionView(
 
   const charts: ChartSeries[] = [];
 
-  if (cardRows.length > 0) {
-    charts.push({
-      name: `Tarjetas · ${periodLabel}`,
-      data: cardRows.slice(0, 12).map((r) => ({
-        label: r.label.slice(0, 28),
-        value: r.value,
-      })),
-    });
-  }
-
-  if (expenseRows.length > 0) {
-    charts.push({
-      name: `Gastos · ${periodLabel}`,
-      kind: "pie",
-      data: expenseRows.slice(0, 12).map((r) => ({
-        label: r.label.slice(0, 28),
-        value: r.value,
-      })),
-    });
-  }
-
   const width = Math.max(...rows.map((r) => r.length), 1);
   const historyStacked: {
     label: string;
     gastado: number;
     queda: number;
+    col: number;
   }[] = [];
   for (let c = 1; c < width; c++) {
     const quedaRaw = toNumber(rows[43]?.[c] ?? null);
@@ -501,6 +483,7 @@ export function buildProyeccionView(
       label: `${halfLabel} ${monthLabel}`,
       gastado,
       queda: Math.max(0, quedaRaw ?? 0),
+      col: c,
     });
   }
   if (historyStacked.length > 0) {
@@ -509,6 +492,27 @@ export function buildProyeccionView(
       kind: "stacked",
       wide: true,
       data: historyStacked,
+    });
+  }
+
+  if (cardRows.length > 0) {
+    charts.push({
+      name: `Tarjetas · ${periodLabel}`,
+      data: cardRows.slice(0, 12).map((r) => ({
+        label: r.label.slice(0, 28),
+        value: r.value,
+      })),
+    });
+  }
+
+  if (expenseRows.length > 0) {
+    charts.push({
+      name: `Gastos · ${periodLabel}`,
+      kind: "pie",
+      data: expenseRows.slice(0, 12).map((r) => ({
+        label: r.label.slice(0, 28),
+        value: r.value,
+      })),
     });
   }
 

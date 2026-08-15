@@ -14,16 +14,19 @@ import {
   YAxis,
 } from "recharts";
 
+type ChartPoint = {
+  label: string;
+  value?: number;
+  gastado?: number;
+  queda?: number;
+  col?: number;
+};
+
 type ChartSeries = {
   name: string;
   kind?: "bar" | "pie" | "stacked";
   wide?: boolean;
-  data: {
-    label: string;
-    value?: number;
-    gastado?: number;
-    queda?: number;
-  }[];
+  data: ChartPoint[];
 };
 
 const PIE_COLORS = [
@@ -55,8 +58,27 @@ function money(n: number): string {
   }).format(n);
 }
 
-export function AutoCharts({ charts }: { charts: ChartSeries[] }) {
+function colFromClick(raw: unknown): number | null {
+  if (!raw || typeof raw !== "object") return null;
+  const payload =
+    "payload" in raw && raw.payload && typeof raw.payload === "object"
+      ? (raw.payload as ChartPoint)
+      : (raw as ChartPoint);
+  return typeof payload.col === "number" ? payload.col : null;
+}
+
+export function AutoCharts({
+  charts,
+  selectedCols = [],
+  onSelectCol,
+}: {
+  charts: ChartSeries[];
+  selectedCols?: number[];
+  onSelectCol?: (col: number) => void;
+}) {
   if (charts.length === 0) return null;
+
+  const selected = new Set(selectedCols);
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -67,7 +89,12 @@ export function AutoCharts({ charts }: { charts: ChartSeries[] }) {
             chart.wide ? "lg:col-span-2" : ""
           }`}
         >
-          <h3 className="mb-4 text-sm font-semibold text-white">{chart.name}</h3>
+          <h3 className="mb-1 text-sm font-semibold text-white">{chart.name}</h3>
+          {chart.kind === "stacked" && onSelectCol && (
+            <p className="mb-3 text-xs text-zinc-400">
+              Clic en una barra para seleccionar esa quincena
+            </p>
+          )}
           <div className={`w-full ${chart.wide ? "h-80" : "h-72"}`}>
             <ResponsiveContainer width="100%" height="100%">
               {chart.kind === "pie" ? (
@@ -108,6 +135,14 @@ export function AutoCharts({ charts }: { charts: ChartSeries[] }) {
                 <BarChart
                   data={chart.data}
                   margin={{ left: 0, right: 8, bottom: 8 }}
+                  onClick={(state) => {
+                    const payload = (
+                      state as { activePayload?: { payload?: ChartPoint }[] }
+                    )?.activePayload?.[0];
+                    const col = colFromClick(payload);
+                    if (col != null) onSelectCol?.(col);
+                  }}
+                  style={{ cursor: onSelectCol ? "pointer" : undefined }}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
                   <XAxis
@@ -136,16 +171,49 @@ export function AutoCharts({ charts }: { charts: ChartSeries[] }) {
                     dataKey="gastado"
                     name="gastado"
                     stackId="a"
-                    fill="#f87171"
-                    radius={[0, 0, 0, 0]}
-                  />
+                    cursor="pointer"
+                    onClick={(data) => {
+                      const col = colFromClick(data);
+                      if (col != null) onSelectCol?.(col);
+                    }}
+                  >
+                    {chart.data.map((entry, i) => {
+                      const isSel =
+                        typeof entry.col === "number" && selected.has(entry.col);
+                      return (
+                        <Cell
+                          key={`g-${i}`}
+                          fill={isSel ? "#fb7185" : "#f87171"}
+                          stroke={isSel ? "#ffffff" : "transparent"}
+                          strokeWidth={isSel ? 2 : 0}
+                        />
+                      );
+                    })}
+                  </Bar>
                   <Bar
                     dataKey="queda"
                     name="queda"
                     stackId="a"
-                    fill="#34d399"
+                    cursor="pointer"
                     radius={[6, 6, 0, 0]}
-                  />
+                    onClick={(data) => {
+                      const col = colFromClick(data);
+                      if (col != null) onSelectCol?.(col);
+                    }}
+                  >
+                    {chart.data.map((entry, i) => {
+                      const isSel =
+                        typeof entry.col === "number" && selected.has(entry.col);
+                      return (
+                        <Cell
+                          key={`q-${i}`}
+                          fill={isSel ? "#6ee7b7" : "#34d399"}
+                          stroke={isSel ? "#ffffff" : "transparent"}
+                          strokeWidth={isSel ? 2 : 0}
+                        />
+                      );
+                    })}
+                  </Bar>
                 </BarChart>
               ) : (
                 <BarChart data={chart.data} margin={{ left: 0, right: 8 }}>

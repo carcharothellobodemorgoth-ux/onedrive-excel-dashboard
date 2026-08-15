@@ -9,6 +9,7 @@ import {
   buildProyeccionView,
   DEFAULT_PERIOD_SELECTION,
   maxDataCol,
+  resolveSelectionCols,
   type PeriodSelection,
 } from "@/lib/dashboard";
 
@@ -260,6 +261,18 @@ export function DashboardClient({
 
   const periodMaxCol = sheet ? maxDataCol(sheet.rows) : 24;
 
+  const selectedCols = useMemo(() => {
+    if (!sheet) return [] as number[];
+    return resolveSelectionCols(sheet.rows, period).cols;
+  }, [sheet, period]);
+
+  const applyPeriod = useCallback((next: PeriodSelection) => {
+    setPeriod(next);
+    if (typeof window !== "undefined") {
+      localStorage.setItem(PERIOD_KEY, JSON.stringify(next));
+    }
+  }, []);
+
   const detailHeaders = ["Imputación", "Monto"];
   const incomeTableRows =
     view?.incomeRows.map((r) => [r.label, r.value] as (string | number)[]) ??
@@ -439,12 +452,7 @@ export function DashboardClient({
                 <PeriodSelector
                   value={period}
                   maxCol={periodMaxCol}
-                  onChange={(next) => {
-                    setPeriod(next);
-                    if (typeof window !== "undefined") {
-                      localStorage.setItem(PERIOD_KEY, JSON.stringify(next));
-                    }
-                  }}
+                  onChange={applyPeriod}
                 />
                 <p className="text-sm text-emerald-300/90">
                   Hoy: <strong className="text-white">{view.todayLabel}</strong>
@@ -462,7 +470,13 @@ export function DashboardClient({
                   </div>
                 )}
                 <KpiCards kpis={view.kpis} />
-                <AutoCharts charts={view.charts} />
+                <AutoCharts
+                  charts={view.charts}
+                  selectedCols={selectedCols}
+                  onSelectCol={(col) =>
+                    applyPeriod({ mode: "quincena", col })
+                  }
+                />
                 <div className="grid gap-6 lg:grid-cols-2">
                   <section>
                     <h2 className="mb-3 text-lg font-semibold text-white">
