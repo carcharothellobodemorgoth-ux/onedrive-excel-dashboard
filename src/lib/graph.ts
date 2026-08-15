@@ -5,6 +5,14 @@ export type DriveItem = {
   name: string;
   webUrl?: string;
   lastModifiedDateTime?: string;
+  parentReference?: { driveId?: string; path?: string };
+};
+
+export type ResolvedWorkbook = {
+  itemId: string;
+  driveId: string;
+  item: DriveItem;
+  strategy: string;
 };
 
 export type Worksheet = {
@@ -20,7 +28,7 @@ export type SheetData = {
 };
 
 export type ResolveResult =
-  | { ok: true; itemId: string; item: DriveItem; strategy: string }
+  | ({ ok: true } & ResolvedWorkbook)
   | { ok: false; candidates: DriveItem[]; message: string };
 
 async function graphFetch<T>(
@@ -61,50 +69,96 @@ async function graphFetchOk<T>(
   return res.json() as Promise<T>;
 }
 
-function toShareToken(url: string): string {
-  const base64 = Buffer.from(url, "utf8")
-    .toString("base64")
-    .replace(/=+$/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
-  return `u!${base64}`;
+function encodePath(path: string): string {
+  // Graph path addressing: /me/drive/root:/folder/file.xlsx
+  return path
+    .split("/")
+    .filter(Boolean)
+    .map((p) => encodeURIComponent(p))
+    .join("/");
 }
 
-function residCandidates(resid: string, cid?: string): string[] {
-  const dashed = resid.toLowerCase();
-  const compact = dashed.replace(/-/g, "");
-  const compactUpper = compact.toUpperCase();
-  const out = new Set<string>([dashed, compact, compactUpper, resid]);
-  if (cid) {
-    const c = cid.toLowerCase();
-    out.add(`${c}!${dashed}`);
-    out.add(`${c}!${compact}`);
-    out.add(`${c}!${compactUpper}`);
-  }
-  return [...out];
+function itemPath(driveId: string, itemId: string, suffix = ""): string {
+  return `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}${suffix}`;
+}
+
+function asResolved(item: DriveItem, strategy: string): ResolvedWorkbook | null {
+  const driveId = item.parentReference?.driveId;
+  if (!item.id || !driveId) return null;
+  return { itemId: item.id, driveId, item, strategy };
+}
+
+async function getPrimaryDriveId(accessToken: string): Promise<string | null> {
+  const drive = await graphFetchOk<{ id: string }>(accessToken, `/me/drive?$select=id`);
+  return drive?.id ?? null;
+}
+
+async function tryPath(
+  accessToken: string,
+  relativePath: string,
+  strategy: string,
+): Promise<ResolvedWorkbook | null> {
+  const encoded = encodePath(relativePath);
+  const item = await graphFetchOk<DriveItem>(
+    accessToken,
+    `/me/drive/root:/${encoded}?$select=id,name,webUrl,lastModifiedDateTime,parentReference`,
+  );
+  if (!item) return null;
+  const resolved = asResolved(item, strategy);
+  if (resolved) return resolved;
+
+  // Fallback: attach primary drive id if parentReference missing
+  const driveId = await getPrimaryDriveId(accessToken);
+  if (!driveId || !item.id) return null;
+  return {
+    itemId: item.id,
+    driveId,
+    item: { ...item, parentReference: { driveId } },
+    strategy: `${strategy}+me-drive`,
+  };
+}
+
+async function tryDriveItem(
+  accessToken: string,
+  driveId: string,
+  itemId: string,
+  strategy: string,
+): Promise<ResolvedWorkbook | null> {
+  const item = await graphFetchOk<DriveItem>(
+    accessToken,
+    itemPath(
+      driveId,
+      itemId,
+      "?$select=id,name,webUrl,lastModifiedDateTime,parentReference",
+    ),
+  );
+  if (!item?.id) return null;
+  const resolved = asResolved(item, strategy);
+  if (resolved) return resolved;
+  return {
+    itemId: item.id,
+    driveId,
+    item: { ...item, parentReference: { ...(item.parentReference ?? {}), driveId } },
+    strategy,
+  };
 }
 
 function isExcelName(name?: string): boolean {
-  return /\.(xlsx|xlsm|xls)$/i.test(name ?? "");
+  return /\.(xlsx|xlsm|xls)$/i.test(name ?? "") || /proyecci[oó]n/i.test(name ?? "");
 }
 
 async function collectExcelCandidates(
   accessToken: string,
 ): Promise<DriveItem[]> {
+  const folder = process.env.EXCEL_FOLDER?.trim() || "Proyecciones";
+  const hint = process.env.EXCEL_FILE_NAME?.trim() || "PROYECCIÓN 26-27";
   const pools: DriveItem[] = [];
   const paths = [
-    `/me/drive/recent?$top=50&$select=id,name,webUrl,lastModifiedDateTime,file`,
-    `/me/drive/root/search(q='.xlsx')?$top=50&$select=id,name,webUrl,lastModifiedDateTime,file`,
-    `/me/drive/root/search(q='xlsx')?$top=50&$select=id,name,webUrl,lastModifiedDateTime,file`,
-    `/me/drive/root/children?$top=200&$select=id,name,webUrl,lastModifiedDateTime,file,folder`,
+    `/me/drive/root:/${encodePath(folder)}:/children?$top=200&$select=id,name,webUrl,lastModifiedDateTime,file,parentReference`,
+    `/me/drive/root/search(q='${hint.replace(/'/g, "''")}')?$top=25&$select=id,name,webUrl,lastModifiedDateTime,file,parentReference`,
+    `/me/drive/recent?$top=50&$select=id,name,webUrl,lastModifiedDateTime,file,parentReference`,
+    `/me/drive/root/search(q='.xlsx')?$top=50&$select=id,name,webUrl,lastModifiedDateTime,file,parentReference`,
   ];
-
-  const hint = process.env.EXCEL_FILE_NAME?.trim();
-  if (hint) {
-    paths.unshift(
-      `/me/drive/root/search(q='${hint.replace(/'/g, "''")}')?$top=25&$select=id,name,webUrl,lastModifiedDateTime,file`,
-    );
-  }
 
   for (const path of paths) {
     const data = await graphFetchOk<{ value: DriveItem[] }>(accessToken, path);
@@ -123,148 +177,102 @@ async function collectExcelCandidates(
 export async function resolveExcelItemId(
   accessToken: string,
   preferredItemId?: string | null,
+  preferredDriveId?: string | null,
 ): Promise<ResolveResult> {
-  const configured = process.env.EXCEL_DRIVE_ITEM_ID?.trim();
-  const cid =
-    process.env.EXCEL_ONEDRIVE_CID?.trim() || "d883d00740abbada";
-  const resid =
-    process.env.EXCEL_ONEDRIVE_RESID?.trim() ||
-    "3cec66d5-ed44-4799-8089-a801fc93a9f2";
-  const fileNameHint = process.env.EXCEL_FILE_NAME?.trim().toLowerCase();
-  const shareUrl =
-    process.env.EXCEL_SHARE_URL?.trim() ||
-    `https://onedrive.live.com/personal/${cid}/_layouts/15/doc.aspx?resid=${resid}&cid=${cid}`;
+  const folder = process.env.EXCEL_FOLDER?.trim() || "Proyecciones";
+  const fileName =
+    process.env.EXCEL_FILE_NAME?.trim() || "PROYECCIÓN 26-27";
+  const configuredPath =
+    process.env.EXCEL_FILE_PATH?.trim() ||
+    `${folder}/${fileName.replace(/\.xlsx$/i, "")}.xlsx`;
 
-  const tryItem = async (
-    itemId: string,
-    strategy: string,
-  ): Promise<ResolveResult | null> => {
-    const item = await graphFetchOk<DriveItem>(
-      accessToken,
-      `/me/drive/items/${encodeURIComponent(itemId)}?$select=id,name,webUrl,lastModifiedDateTime`,
-    );
-    if (item?.id) return { ok: true, itemId: item.id, item, strategy };
+  // 1) Explicit path (best for personal OneDrive)
+  const pathVariants = Array.from(
+    new Set([
+      configuredPath,
+      `${folder}/${fileName}`,
+      `${folder}/${fileName}.xlsx`,
+      `${folder}/PROYECCIÓN 26-27.xlsx`,
+      `${folder}/PROYECCION 26-27.xlsx`,
+      `Proyecciones/PROYECCIÓN 26-27.xlsx`,
+    ]),
+  );
 
-    if (cid) {
-      const viaDrive = await graphFetchOk<DriveItem>(
-        accessToken,
-        `/me/drives/${encodeURIComponent(cid)}/items/${encodeURIComponent(itemId)}?$select=id,name,webUrl,lastModifiedDateTime`,
-      );
-      if (viaDrive?.id) {
-        return {
-          ok: true,
-          itemId: viaDrive.id,
-          item: viaDrive,
-          strategy: `${strategy}+drive`,
-        };
-      }
-    }
-    return null;
-  };
+  for (const p of pathVariants) {
+    const hit = await tryPath(accessToken, p, `path:${p}`);
+    if (hit) return { ok: true, ...hit };
+  }
 
+  // 2) Preferred selection from UI
   if (preferredItemId) {
-    const hit = await tryItem(preferredItemId, "user-selected");
-    if (hit) return hit;
-  }
-
-  if (configured) {
-    const hit = await tryItem(configured, "EXCEL_DRIVE_ITEM_ID");
-    if (hit) return hit;
-  }
-
-  // Share / open link → driveItem
-  for (const url of [
-    shareUrl,
-    `https://onedrive.live.com/edit.aspx?resid=${resid}&cid=${cid}`,
-    `https://onedrive.live.com/?cid=${cid}&id=${resid}`,
-  ]) {
-    const share = await graphFetchOk<{ id?: string; name?: string; webUrl?: string }>(
-      accessToken,
-      `/shares/${toShareToken(url)}/driveItem?$select=id,name,webUrl,lastModifiedDateTime`,
-    );
-    if (share?.id) {
-      return {
-        ok: true,
-        itemId: share.id,
-        item: share as DriveItem,
-        strategy: `share:${url.slice(0, 48)}`,
-      };
+    const driveId =
+      preferredDriveId || (await getPrimaryDriveId(accessToken));
+    if (driveId) {
+      const hit = await tryDriveItem(
+        accessToken,
+        driveId,
+        preferredItemId,
+        "user-selected",
+      );
+      if (hit) return { ok: true, ...hit };
     }
   }
 
-  for (const candidate of residCandidates(resid, cid)) {
-    const hit = await tryItem(candidate, `resid:${candidate}`);
-    if (hit) return hit;
-  }
-
+  // 3) Candidates from folder/search — pick by name
   const candidates = await collectExcelCandidates(accessToken);
-  const residNeedle = resid.replace(/-/g, "").toLowerCase();
-
-  for (const it of candidates) {
-    const url = (it.webUrl ?? "").toLowerCase();
-    const name = (it.name ?? "").toLowerCase();
-    if (
-      url.includes(resid.toLowerCase()) ||
-      url.includes(residNeedle) ||
-      (fileNameHint && name.includes(fileNameHint))
-    ) {
-      return {
-        ok: true,
-        itemId: it.id,
-        item: it,
-        strategy: "candidate-match",
-      };
-    }
-  }
-
-  if (fileNameHint) {
-    const byName = candidates.find((c) =>
-      (c.name ?? "").toLowerCase().includes(fileNameHint),
-    );
-    if (byName) {
-      return {
-        ok: true,
-        itemId: byName.id,
-        item: byName,
-        strategy: "EXCEL_FILE_NAME",
-      };
+  const needle = fileName.replace(/\.xlsx$/i, "").toLowerCase();
+  const named = candidates.find((c) =>
+    (c.name ?? "").toLowerCase().includes(needle),
+  );
+  if (named) {
+    const driveId =
+      named.parentReference?.driveId || (await getPrimaryDriveId(accessToken));
+    if (driveId) {
+      const hit = await tryDriveItem(
+        accessToken,
+        driveId,
+        named.id,
+        "name-match",
+      );
+      if (hit) return { ok: true, ...hit };
     }
   }
 
   if (candidates.length === 1) {
-    return {
-      ok: true,
-      itemId: candidates[0].id,
-      item: candidates[0],
-      strategy: "single-excel",
-    };
+    const only = candidates[0];
+    const driveId =
+      only.parentReference?.driveId || (await getPrimaryDriveId(accessToken));
+    if (driveId) {
+      const hit = await tryDriveItem(
+        accessToken,
+        driveId,
+        only.id,
+        "single-candidate",
+      );
+      if (hit) return { ok: true, ...hit };
+    }
   }
 
   return {
     ok: false,
     candidates,
     message:
-      "No pude mapear el link de OneDrive a un archivo Graph. Elegí la planilla de la lista.",
+      "No encontré PROYECCIÓN 26-27 en la carpeta Proyecciones. Elegí el archivo de la lista.",
   };
-}
-
-export async function getDriveItem(
-  accessToken: string,
-  itemId: string,
-): Promise<DriveItem> {
-  return graphFetch<DriveItem>(
-    accessToken,
-    `/me/drive/items/${encodeURIComponent(itemId)}?$select=id,name,webUrl,lastModifiedDateTime`,
-  );
 }
 
 export async function listWorksheets(
   accessToken: string,
+  driveId: string,
   itemId: string,
 ): Promise<Worksheet[]> {
   const data = await graphFetch<{ value: Worksheet[] }>(
     accessToken,
-    `/me/drive/items/${encodeURIComponent(itemId)}/workbook/worksheets?$select=id,name,position&$orderby=position`,
+    itemPath(
+      driveId,
+      itemId,
+      "/workbook/worksheets?$select=id,name,position&$orderby=position",
+    ),
   );
   return data.value ?? [];
 }
@@ -290,17 +298,26 @@ function cellValue(raw: unknown): string | number | boolean | null {
 
 export async function getWorksheetData(
   accessToken: string,
+  driveId: string,
   itemId: string,
   worksheetId: string,
 ): Promise<SheetData> {
   const worksheet = await graphFetch<Worksheet>(
     accessToken,
-    `/me/drive/items/${encodeURIComponent(itemId)}/workbook/worksheets/${encodeURIComponent(worksheetId)}?$select=id,name,position`,
+    itemPath(
+      driveId,
+      itemId,
+      `/workbook/worksheets/${encodeURIComponent(worksheetId)}?$select=id,name,position`,
+    ),
   );
 
   const range = await graphFetch<UsedRange>(
     accessToken,
-    `/me/drive/items/${encodeURIComponent(itemId)}/workbook/worksheets/${encodeURIComponent(worksheetId)}/usedRange(valuesOnly=true)?$select=values`,
+    itemPath(
+      driveId,
+      itemId,
+      `/workbook/worksheets/${encodeURIComponent(worksheetId)}/usedRange(valuesOnly=true)?$select=values`,
+    ),
   );
 
   const values = range.values ?? [];
@@ -324,25 +341,25 @@ export async function getWorksheetData(
 export async function loadWorkbookSummary(
   accessToken: string,
   preferredItemId?: string | null,
+  preferredDriveId?: string | null,
 ): Promise<
-  | {
+  | ({
       ok: true;
-      item: DriveItem;
       worksheets: Worksheet[];
-      itemId: string;
-      strategy: string;
-    }
+    } & ResolvedWorkbook)
   | { ok: false; candidates: DriveItem[]; message: string }
 > {
-  const resolved = await resolveExcelItemId(accessToken, preferredItemId);
+  const resolved = await resolveExcelItemId(
+    accessToken,
+    preferredItemId,
+    preferredDriveId,
+  );
   if (!resolved.ok) return resolved;
 
-  const worksheets = await listWorksheets(accessToken, resolved.itemId);
-  return {
-    ok: true,
-    item: resolved.item,
-    worksheets,
-    itemId: resolved.itemId,
-    strategy: resolved.strategy,
-  };
+  const worksheets = await listWorksheets(
+    accessToken,
+    resolved.driveId,
+    resolved.itemId,
+  );
+  return { ...resolved, worksheets };
 }

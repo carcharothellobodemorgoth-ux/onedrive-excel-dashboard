@@ -12,6 +12,7 @@ type DriveItem = {
   name: string;
   webUrl?: string;
   lastModifiedDateTime?: string;
+  parentReference?: { driveId?: string };
 };
 type SheetPayload = {
   worksheet: Worksheet;
@@ -19,7 +20,8 @@ type SheetPayload = {
   rows: (string | number | boolean | null)[][];
 };
 
-const STORAGE_KEY = "excel-dashboard-item-id";
+const ITEM_KEY = "excel-dashboard-item-id";
+const DRIVE_KEY = "excel-dashboard-drive-id";
 
 export function DashboardClient({
   userName,
@@ -28,6 +30,7 @@ export function DashboardClient({
 }) {
   const [item, setItem] = useState<DriveItem | null>(null);
   const [itemId, setItemId] = useState<string | null>(null);
+  const [driveId, setDriveId] = useState<string | null>(null);
   const [worksheets, setWorksheets] = useState<Worksheet[]>([]);
   const [candidates, setCandidates] = useState<DriveItem[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -36,53 +39,75 @@ export function DashboardClient({
   const [sheetLoading, setSheetLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadSummary = useCallback(async (preferred?: string | null) => {
-    setLoading(true);
-    setError(null);
-    setCandidates([]);
-    try {
-      const stored =
-        preferred ??
-        (typeof window !== "undefined"
-          ? localStorage.getItem(STORAGE_KEY)
-          : null);
-      const qs = stored ? `?itemId=${encodeURIComponent(stored)}` : "";
-      const res = await fetch(`/api/excel${qs}`);
-      const data = await res.json();
+  const loadSummary = useCallback(
+    async (preferred?: { itemId?: string | null; driveId?: string | null }) => {
+      setLoading(true);
+      setError(null);
+      setCandidates([]);
+      try {
+        const storedItem =
+          preferred?.itemId ??
+          (typeof window !== "undefined" ? localStorage.getItem(ITEM_KEY) : null);
+        const storedDrive =
+          preferred?.driveId ??
+          (typeof window !== "undefined"
+            ? localStorage.getItem(DRIVE_KEY)
+            : null);
 
-      if (res.status === 409 && data.candidates) {
-        setCandidates(data.candidates);
-        setError(data.message ?? "Elegí una planilla");
-        setItem(null);
-        setItemId(null);
-        setWorksheets([]);
-        return;
+        const qs = new URLSearchParams();
+        // Prefer path resolution first; only pass stored ids if both exist
+        if (storedItem && storedDrive) {
+          qs.set("itemId", storedItem);
+          qs.set("driveId", storedDrive);
+        }
+        const res = await fetch(
+          `/api/excel${qs.toString() ? `?${qs}` : ""}`,
+        );
+        const data = await res.json();
+
+        if (res.status === 409 && data.candidates) {
+          setCandidates(data.candidates);
+          setError(data.message ?? "Elegí una planilla");
+          setItem(null);
+          setItemId(null);
+          setDriveId(null);
+          setWorksheets([]);
+          return;
+        }
+
+        if (!res.ok) throw new Error(data.error ?? "No se pudo leer la Excel");
+
+        setItem(data.item);
+        setItemId(data.itemId ?? data.item?.id ?? null);
+        setDriveId(data.driveId ?? null);
+        if (typeof window !== "undefined" && data.itemId && data.driveId) {
+          localStorage.setItem(ITEM_KEY, data.itemId);
+          localStorage.setItem(DRIVE_KEY, data.driveId);
+        }
+        setWorksheets(data.worksheets ?? []);
+        setActiveId(data.worksheets?.[0]?.id ?? null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Error desconocido");
+      } finally {
+        setLoading(false);
       }
-
-      if (!res.ok) throw new Error(data.error ?? "No se pudo leer la Excel");
-
-      setItem(data.item);
-      setItemId(data.itemId ?? data.item?.id ?? null);
-      if (data.itemId && typeof window !== "undefined") {
-        localStorage.setItem(STORAGE_KEY, data.itemId);
-      }
-      setWorksheets(data.worksheets ?? []);
-      setActiveId(data.worksheets?.[0]?.id ?? null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Error desconocido");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   const loadSheet = useCallback(
-    async (worksheetId: string, resolvedItemId: string) => {
+    async (
+      worksheetId: string,
+      resolvedItemId: string,
+      resolvedDriveId: string,
+    ) => {
       setSheetLoading(true);
       setError(null);
       try {
         const qs = new URLSearchParams({
           worksheetId,
           itemId: resolvedItemId,
+          driveId: resolvedDriveId,
         });
         const res = await fetch(`/api/excel?${qs.toString()}`);
         const data = await res.json();
@@ -99,12 +124,22 @@ export function DashboardClient({
   );
 
   useEffect(() => {
-    void loadSummary();
+    // Clear stale item-only cache from previous broken resolver
+    if (typeof window !== "undefined") {
+      const hasItem = localStorage.getItem(ITEM_KEY);
+      const hasDrive = localStorage.getItem(DRIVE_KEY);
+      if (hasItem && !hasDrive) {
+        localStorage.removeItem(ITEM_KEY);
+      }
+    }
+    void loadSummary({});
   }, [loadSummary]);
 
   useEffect(() => {
-    if (activeId && itemId) void loadSheet(activeId, itemId);
-  }, [activeId, itemId, loadSheet]);
+    if (activeId && itemId && driveId) {
+      void loadSheet(activeId, itemId, driveId);
+    }
+  }, [activeId, itemId, driveId, loadSheet]);
 
   const kpis = useMemo(
     () => (sheet ? buildKpis(sheet.headers, sheet.rows) : []),
@@ -134,9 +169,10 @@ export function DashboardClient({
             type="button"
             onClick={() => {
               if (typeof window !== "undefined") {
-                localStorage.removeItem(STORAGE_KEY);
+                localStorage.removeItem(ITEM_KEY);
+                localStorage.removeItem(DRIVE_KEY);
               }
-              void loadSummary(null);
+              void loadSummary({ itemId: null, driveId: null });
             }}
             className="rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-emerald-400"
           >
@@ -160,11 +196,11 @@ export function DashboardClient({
       {candidates.length > 0 && (
         <section className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-5">
           <h2 className="text-lg font-semibold text-white">
-            ¿Cuál es la planilla del link de OneDrive?
+            ¿Cuál es la planilla?
           </h2>
           <p className="mt-1 text-sm text-zinc-300">
-            El resid del link no coincide con un ID de Graph. Elegí el archivo
-            correcto (se guarda en este navegador).
+            Buscamos en la carpeta Proyecciones. Elegí{" "}
+            <strong>PROYECCIÓN 26-27</strong> si aparece.
           </p>
           <ul className="mt-4 grid gap-2 sm:grid-cols-2">
             {candidates.map((c) => (
@@ -172,8 +208,12 @@ export function DashboardClient({
                 <button
                   type="button"
                   onClick={() => {
-                    localStorage.setItem(STORAGE_KEY, c.id);
-                    void loadSummary(c.id);
+                    const d = c.parentReference?.driveId ?? null;
+                    if (typeof window !== "undefined") {
+                      localStorage.setItem(ITEM_KEY, c.id);
+                      if (d) localStorage.setItem(DRIVE_KEY, d);
+                    }
+                    void loadSummary({ itemId: c.id, driveId: d });
                   }}
                   className="w-full rounded-xl border border-white/10 bg-zinc-950/40 px-4 py-3 text-left hover:border-emerald-400/40 hover:bg-emerald-500/10"
                 >
