@@ -29,9 +29,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     MicrosoftEntraID({
       clientId: process.env.AUTH_MICROSOFT_ENTRA_ID_ID!,
       clientSecret: process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET!,
+      // Personal MSA: discovery returns this tenant GUID as issuer, not ".../consumers/v2.0"
       issuer:
         process.env.AUTH_MICROSOFT_ENTRA_ID_ISSUER ??
-        "https://login.microsoftonline.com/consumers/v2.0",
+        "https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0",
       authorization: {
         params: {
           scope: scopes,
@@ -64,7 +65,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       try {
         const issuer =
           process.env.AUTH_MICROSOFT_ENTRA_ID_ISSUER ??
-          "https://login.microsoftonline.com/consumers/v2.0";
+          "https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0";
         const tokenUrl = `${issuer.replace(/\/$/, "")}/oauth2/v2.0/token`;
         const response = await fetch(tokenUrl, {
           method: "POST",
