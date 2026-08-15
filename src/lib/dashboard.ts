@@ -15,7 +15,7 @@ export type ChartSeries = {
     value?: number;
     gastado?: number;
     queda?: number;
-    /** Excel column index (1-based) for clickable history bars */
+    /** Quincena index (1-based) for clickable history bars */
     col?: number;
   }[];
 };
@@ -38,6 +38,22 @@ export type PeriodSelection =
   | { mode: "custom"; fromCol: number; toCol: number };
 
 type Cell = string | number | boolean | null;
+
+type SheetLayout = {
+  /** Array index of first quincena column */
+  dataStart: number;
+  hasCategory: boolean;
+};
+
+const CATEGORY_COL = 1;
+
+const CANONICAL_CATEGORIES = [
+  "Tarjetas",
+  "Casa",
+  "Familia",
+  "Educación",
+  "Otros",
+] as const;
 
 function isNumber(v: Cell): v is number {
   return typeof v === "number" && Number.isFinite(v);
@@ -69,23 +85,82 @@ function labelAt(rows: Cell[][], excelRow: number): string {
   return String(v).trim();
 }
 
-function valueAt(rows: Cell[][], excelRow: number, col: number): number {
-  return toNumber(rows[excelRow - 1]?.[col] ?? null) ?? 0;
+function rawCategoryAt(rows: Cell[][], excelRow: number): string {
+  const v = rows[excelRow - 1]?.[CATEGORY_COL];
+  if (v === null || v === undefined || v === "") return "";
+  return String(v).trim();
+}
+
+function normalizeCategory(raw: string): (typeof CANONICAL_CATEGORIES)[number] {
+  const key = raw
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+  if (!key) return "Otros";
+  if (key.startsWith("tarjeta")) return "Tarjetas";
+  if (key.startsWith("casa") || key.startsWith("compra")) return "Casa";
+  if (key.startsWith("familia") || key.startsWith("chico")) return "Familia";
+  if (key.startsWith("educacion") || key.startsWith("edu")) return "Educación";
+  if (key.startsWith("otro") || key.startsWith("personal")) return "Otros";
+  for (const c of CANONICAL_CATEGORIES) {
+    const cKey = c
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+    if (key === cKey) return c;
+  }
+  return "Otros";
+}
+
+/**
+ * Detect A=label, B=categoría, C+=quincenas vs legacy A=label, B+=quincenas.
+ * If column B looks like text categories on expense rows → new layout.
+ */
+export function detectSheetLayout(rows: Cell[][]): SheetLayout {
+  let textish = 0;
+  let numeric = 0;
+  for (let r = 3; r < Math.min(34, rows.length); r++) {
+    const cell = rows[r]?.[CATEGORY_COL];
+    if (cell === null || cell === undefined || cell === "") continue;
+    if (toNumber(cell) !== null) numeric += 1;
+    else if (typeof cell === "string" && cell.trim()) textish += 1;
+  }
+  if (textish >= 3 && textish >= numeric) {
+    return { dataStart: 2, hasCategory: true };
+  }
+  return { dataStart: 1, hasCategory: false };
+}
+
+function sheetCol(layout: SheetLayout, quincena: number): number {
+  return layout.dataStart + quincena - 1;
+}
+
+function valueAtQuincena(
+  rows: Cell[][],
+  layout: SheetLayout,
+  excelRow: number,
+  quincena: number,
+): number {
+  return (
+    toNumber(rows[excelRow - 1]?.[sheetCol(layout, quincena)] ?? null) ?? 0
+  );
 }
 
 function sumRowsCols(
   rows: Cell[][],
+  layout: SheetLayout,
   excelFrom: number,
   excelTo: number,
-  cols: number[],
+  quincenas: number[],
   skipLabels: RegExp[] = [],
 ): number {
   let sum = 0;
-  for (const col of cols) {
+  for (const q of quincenas) {
     for (let r = excelFrom; r <= excelTo; r++) {
       const label = labelAt(rows, r);
       if (!label || skipLabels.some((re) => re.test(label))) continue;
-      sum += valueAt(rows, r, col);
+      sum += valueAtQuincena(rows, layout, r, q);
     }
   }
   return sum;
@@ -93,22 +168,53 @@ function sumRowsCols(
 
 function listRowsCols(
   rows: Cell[][],
+  layout: SheetLayout,
   excelFrom: number,
   excelTo: number,
-  cols: number[],
+  quincenas: number[],
   skipLabels: RegExp[] = [],
 ): { label: string; value: number }[] {
   const map = new Map<string, number>();
-  for (const col of cols) {
+  for (const q of quincenas) {
     for (let r = excelFrom; r <= excelTo; r++) {
       const label = labelAt(rows, r);
       if (!label || skipLabels.some((re) => re.test(label))) continue;
-      const value = valueAt(rows, r, col);
+      const value = valueAtQuincena(rows, layout, r, q);
       if (value === 0) continue;
       map.set(label, (map.get(label) ?? 0) + value);
     }
   }
   return [...map.entries()].map(([label, value]) => ({ label, value }));
+}
+
+function listCategoryTotals(
+  rows: Cell[][],
+  layout: SheetLayout,
+  excelFrom: number,
+  excelTo: number,
+  quincenas: number[],
+  skipLabels: RegExp[] = [],
+): { label: string; value: number }[] {
+  const map = new Map<string, number>();
+  for (const cat of CANONICAL_CATEGORIES) map.set(cat, 0);
+
+  for (const q of quincenas) {
+    for (let r = excelFrom; r <= excelTo; r++) {
+      const label = labelAt(rows, r);
+      if (!label || skipLabels.some((re) => re.test(label))) continue;
+      const value = Math.abs(valueAtQuincena(rows, layout, r, q));
+      if (value === 0) continue;
+      const cat = layout.hasCategory
+        ? normalizeCategory(rawCategoryAt(rows, r))
+        : "Otros";
+      map.set(cat, (map.get(cat) ?? 0) + value);
+    }
+  }
+
+  return CANONICAL_CATEGORIES.map((label) => ({
+    label,
+    value: map.get(label) ?? 0,
+  })).filter((r) => r.value > 0);
 }
 
 const MONTHS_ES = [
@@ -206,8 +312,7 @@ export function resolvePeriodFromDate(
   rows: Cell[][],
   now: Date = new Date(),
 ): PeriodResolution {
-  const width = Math.max(1, ...rows.map((r) => r.length));
-  const maxCol = Math.max(1, width - 1);
+  const maxCol = maxDataCol(rows);
   const start = cycleStart();
   const y = now.getFullYear();
   const m = now.getMonth() + 1;
@@ -248,8 +353,9 @@ export function detectCurrentQuincenaCol(
 }
 
 export function maxDataCol(rows: Cell[][]): number {
+  const layout = detectSheetLayout(rows);
   const width = Math.max(1, ...rows.map((r) => r.length));
-  return Math.max(1, Math.min(24, width - 1));
+  return Math.max(1, Math.min(24, width - layout.dataStart));
 }
 
 export function resolveSelectionCols(
@@ -330,6 +436,13 @@ export function resolveSelectionCols(
 }
 
 const SKIP = [/^$/i, /^-+$/];
+const SKIP_EXPENSE = [
+  ...SKIP,
+  /^resta$/i,
+  /^lo que queda$/i,
+  /^transf/i,
+  /^categoria$/i,
+];
 
 export const DEFAULT_PERIOD_SELECTION: PeriodSelection = {
   mode: "quincena",
@@ -341,6 +454,7 @@ export function buildProyeccionView(
   selection: PeriodSelection = DEFAULT_PERIOD_SELECTION,
   now: Date = new Date(),
 ): ProyeccionView {
+  const layout = detectSheetLayout(rows);
   const resolved = resolveSelectionCols(rows, selection, now);
 
   if (rows.length < 44) {
@@ -389,34 +503,38 @@ export function buildProyeccionView(
   const CARD_ROW_FROM = 23;
   const CARD_ROW_TO = 25;
 
-  const ingresos = sumRowsCols(rows, 1, 3, cols, SKIP);
-  const gastos = sumRowsCols(rows, 4, 34, cols, [
-    ...SKIP,
-    /^resta$/i,
-    /^lo que queda$/i,
-    /^transf/i,
-  ]);
-  const tarjetas = sumRowsCols(rows, CARD_ROW_FROM, CARD_ROW_TO, cols, SKIP);
-  const gastosPost = sumRowsCols(rows, 37, 41, cols, SKIP);
-  const neteo = valueAt(rows, 35, lastCol);
-  const balanceFinal = valueAt(rows, 44, lastCol);
+  const ingresos = sumRowsCols(rows, layout, 1, 3, cols, SKIP);
+  const gastos = sumRowsCols(rows, layout, 4, 34, cols, SKIP_EXPENSE);
+  const tarjetas = sumRowsCols(rows, layout, CARD_ROW_FROM, CARD_ROW_TO, cols, SKIP);
+  const gastosPost = sumRowsCols(rows, layout, 37, 41, cols, SKIP);
+  const neteo = valueAtQuincena(rows, layout, 35, lastCol);
+  const balanceFinal = valueAtQuincena(rows, layout, 44, lastCol);
 
-  const incomeRows = listRowsCols(rows, 1, 3, cols, SKIP);
+  const incomeRows = listRowsCols(rows, layout, 1, 3, cols, SKIP);
   const expenseRows = [
-    ...listRowsCols(rows, 4, 34, cols, [
-      ...SKIP,
-      /^resta$/i,
-      /^lo que queda$/i,
-      /^transf/i,
-    ]),
-    ...listRowsCols(rows, 37, 41, cols, SKIP),
+    ...listRowsCols(rows, layout, 4, 34, cols, SKIP_EXPENSE),
+    ...listRowsCols(rows, layout, 37, 41, cols, SKIP),
   ]
     .map((r) => ({ ...r, value: Math.abs(r.value) }))
     .sort((a, b) => b.value - a.value);
 
-  const cardRows = listRowsCols(rows, CARD_ROW_FROM, CARD_ROW_TO, cols, SKIP)
+  const cardRows = listRowsCols(rows, layout, CARD_ROW_FROM, CARD_ROW_TO, cols, SKIP)
     .map((r) => ({ ...r, value: Math.abs(r.value) }))
     .sort((a, b) => b.value - a.value);
+
+  const categoryChart = (() => {
+    const catMap = new Map<string, number>();
+    for (const part of [
+      ...listCategoryTotals(rows, layout, 4, 34, cols, SKIP_EXPENSE),
+      ...listCategoryTotals(rows, layout, 37, 41, cols, SKIP),
+    ]) {
+      catMap.set(part.label, (catMap.get(part.label) ?? 0) + part.value);
+    }
+    return CANONICAL_CATEGORIES.map((label) => ({
+      label,
+      value: catMap.get(label) ?? 0,
+    })).filter((r) => r.value > 0);
+  })();
 
   const kpis: Kpi[] = [
     {
@@ -459,31 +577,27 @@ export function buildProyeccionView(
 
   const charts: ChartSeries[] = [];
 
-  const width = Math.max(...rows.map((r) => r.length), 1);
+  const maxQ = maxDataCol(rows);
   const historyStacked: {
     label: string;
     gastado: number;
     queda: number;
     col: number;
   }[] = [];
-  for (let c = 1; c < width; c++) {
-    const quedaRaw = toNumber(rows[43]?.[c] ?? null);
-    const gastoPeriodo = sumRowsCols(rows, 4, 34, [c], [
-      ...SKIP,
-      /^resta$/i,
-      /^lo que queda$/i,
-      /^transf/i,
-    ]);
-    const gastoPost = sumRowsCols(rows, 37, 41, [c], SKIP);
+  for (let q = 1; q <= maxQ; q++) {
+    const quedaRaw = toNumber(
+      rows[43]?.[sheetCol(layout, q)] ?? null,
+    );
+    const gastoPeriodo = sumRowsCols(rows, layout, 4, 34, [q], SKIP_EXPENSE);
+    const gastoPost = sumRowsCols(rows, layout, 37, 41, [q], SKIP);
     const gastado = Math.abs(gastoPeriodo) + Math.abs(gastoPost);
-    // Include quincena if it has any movement (gastos or balance filled)
     if (quedaRaw === null && gastado === 0) continue;
-    const { halfLabel, monthLabel } = periodMeta(c);
+    const { halfLabel, monthLabel } = periodMeta(q);
     historyStacked.push({
       label: `${halfLabel} ${monthLabel}`,
       gastado,
       queda: Math.max(0, quedaRaw ?? 0),
-      col: c,
+      col: q,
     });
   }
   if (historyStacked.length > 0) {
@@ -492,6 +606,14 @@ export function buildProyeccionView(
       kind: "stacked",
       wide: true,
       data: historyStacked,
+    });
+  }
+
+  if (layout.hasCategory && categoryChart.length > 0) {
+    charts.push({
+      name: `Categorías · ${periodLabel}`,
+      kind: "pie",
+      data: categoryChart,
     });
   }
 
