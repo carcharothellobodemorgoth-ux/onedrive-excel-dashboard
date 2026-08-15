@@ -47,14 +47,6 @@ type SheetLayout = {
 
 const CATEGORY_COL = 1;
 
-const CANONICAL_CATEGORIES = [
-  "Tarjetas",
-  "Casa",
-  "Familia",
-  "Educación",
-  "Otros",
-] as const;
-
 function isNumber(v: Cell): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
@@ -91,26 +83,33 @@ function rawCategoryAt(rows: Cell[][], excelRow: number): string {
   return String(v).trim();
 }
 
-function normalizeCategory(raw: string): (typeof CANONICAL_CATEGORIES)[number] {
-  const key = raw
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim();
-  if (!key) return "Otros";
-  if (key.startsWith("tarjeta")) return "Tarjetas";
-  if (key.startsWith("casa") || key.startsWith("compra")) return "Casa";
-  if (key.startsWith("familia") || key.startsWith("chico")) return "Familia";
-  if (key.startsWith("educacion") || key.startsWith("edu")) return "Educación";
-  if (key.startsWith("otro") || key.startsWith("personal")) return "Otros";
-  for (const c of CANONICAL_CATEGORIES) {
-    const cKey = c
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase();
-    if (key === cKey) return c;
+function listCategoryTotals(
+  rows: Cell[][],
+  layout: SheetLayout,
+  excelFrom: number,
+  excelTo: number,
+  quincenas: number[],
+  skipLabels: RegExp[] = [],
+): { label: string; value: number }[] {
+  const map = new Map<string, number>();
+
+  for (const q of quincenas) {
+    for (let r = excelFrom; r <= excelTo; r++) {
+      const label = labelAt(rows, r);
+      if (!label || skipLabels.some((re) => re.test(label))) continue;
+      const value = Math.abs(valueAtQuincena(rows, layout, r, q));
+      if (value === 0) continue;
+      const cat = layout.hasCategory
+        ? rawCategoryAt(rows, r) || "Sin categoría"
+        : "Sin categoría";
+      map.set(cat, (map.get(cat) ?? 0) + value);
+    }
   }
-  return "Otros";
+
+  return [...map.entries()]
+    .map(([label, value]) => ({ label, value }))
+    .filter((r) => r.value > 0)
+    .sort((a, b) => b.value - a.value);
 }
 
 /**
@@ -185,36 +184,6 @@ function listRowsCols(
     }
   }
   return [...map.entries()].map(([label, value]) => ({ label, value }));
-}
-
-function listCategoryTotals(
-  rows: Cell[][],
-  layout: SheetLayout,
-  excelFrom: number,
-  excelTo: number,
-  quincenas: number[],
-  skipLabels: RegExp[] = [],
-): { label: string; value: number }[] {
-  const map = new Map<string, number>();
-  for (const cat of CANONICAL_CATEGORIES) map.set(cat, 0);
-
-  for (const q of quincenas) {
-    for (let r = excelFrom; r <= excelTo; r++) {
-      const label = labelAt(rows, r);
-      if (!label || skipLabels.some((re) => re.test(label))) continue;
-      const value = Math.abs(valueAtQuincena(rows, layout, r, q));
-      if (value === 0) continue;
-      const cat = layout.hasCategory
-        ? normalizeCategory(rawCategoryAt(rows, r))
-        : "Otros";
-      map.set(cat, (map.get(cat) ?? 0) + value);
-    }
-  }
-
-  return CANONICAL_CATEGORIES.map((label) => ({
-    label,
-    value: map.get(label) ?? 0,
-  })).filter((r) => r.value > 0);
 }
 
 const MONTHS_ES = [
@@ -526,10 +495,10 @@ export function buildProyeccionView(
     ]) {
       catMap.set(part.label, (catMap.get(part.label) ?? 0) + part.value);
     }
-    return CANONICAL_CATEGORIES.map((label) => ({
-      label,
-      value: catMap.get(label) ?? 0,
-    })).filter((r) => r.value > 0);
+    return [...catMap.entries()]
+      .map(([label, value]) => ({ label, value }))
+      .filter((r) => r.value > 0)
+      .sort((a, b) => b.value - a.value);
   })();
 
   const kpis: Kpi[] = [
