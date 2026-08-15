@@ -326,6 +326,9 @@ export async function resolveExcelItemId(
     process.env.EXCEL_FILE_PATH?.trim() ||
     `${folder}/${fileName.replace(/\.xlsx$/i, "")}.xlsx`;
   const needle = fileName.replace(/\.xlsx$/i, "").toLowerCase();
+  const configuredShare =
+    process.env.EXCEL_SHARE_URL?.trim() ||
+    "https://1drv.ms/x/c/d883d00740abbada/IQDVZuw8RO2ZR4CJqAH8k6nyAStmn-NqhF2_OUAcEu3D3_M?e=76bLdx";
 
   // 0) Preferred selection from UI (may be a shared remote item)
   if (preferredItemId && preferredDriveId) {
@@ -338,7 +341,11 @@ export async function resolveExcelItemId(
     if (hit) return { ok: true, ...hit };
   }
 
-  // 1) Shared with me FIRST (common for personal OneDrive links you can open but don't own)
+  // 1) Configured share link (works for "anyone with the link")
+  const fromShare = await resolveFromShareUrl(accessToken, configuredShare);
+  if (fromShare.ok) return fromShare;
+
+  // 2) Shared with me
   const shared = await collectSharedExcel(accessToken);
   const sharedHit = shared.find((c) =>
     (c.name ?? "").toLowerCase().includes(needle),
@@ -353,7 +360,6 @@ export async function resolveExcelItemId(
       "sharedWithMe",
     );
     if (hit) return { ok: true, ...hit };
-    // remote ids from sharedWithMe are often already valid
     return {
       ok: true,
       itemId: sharedHit.id,
@@ -363,7 +369,7 @@ export async function resolveExcelItemId(
     };
   }
 
-  // 2) Explicit path on own drive
+  // 3) Explicit path on own drive
   const pathVariants = Array.from(
     new Set([
       configuredPath,
@@ -380,7 +386,7 @@ export async function resolveExcelItemId(
     if (hit) return { ok: true, ...hit };
   }
 
-  // 3) Own drive + shared candidates — pick by name
+  // 4) Own drive + shared candidates — pick by name
   const candidates = await collectExcelCandidates(accessToken);
   const named =
     candidates.find((c) => (c.name ?? "").toLowerCase().includes(needle)) ??
@@ -404,7 +410,8 @@ export async function resolveExcelItemId(
       (c, i, arr) => arr.findIndex((x) => x.id === c.id) === i,
     ),
     message:
-      "No encontré PROYECCIÓN 26-27 en tu OneDrive ni en Compartido conmigo. Si es de otra persona, pedile que te la comparta (puede editar) o elegí un archivo de la lista. También cerrá sesión y volvé a entrar para aceptar el permiso Files.Read.All.",
+      fromShare.message ||
+      "No encontré PROYECCIÓN 26-27. Pegá el link 1drv.ms en el campo de share o elegí un archivo de la lista.",
   };
 }
 

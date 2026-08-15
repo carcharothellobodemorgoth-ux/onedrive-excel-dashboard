@@ -38,7 +38,9 @@ export function DashboardClient({
   const [loading, setLoading] = useState(true);
   const [sheetLoading, setSheetLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [shareUrl, setShareUrl] = useState("");
+  const [shareUrl, setShareUrl] = useState(
+    "https://1drv.ms/x/c/d883d00740abbada/IQDVZuw8RO2ZR4CJqAH8k6nyAStmn-NqhF2_OUAcEu3D3_M?e=76bLdx",
+  );
   const [shareBusy, setShareBusy] = useState(false);
 
   const applySummary = useCallback((data: {
