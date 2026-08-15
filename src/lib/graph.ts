@@ -479,13 +479,13 @@ export async function getWorksheetData(
     return { worksheet, headers: [], rows: [] };
   }
 
-  const headerRow = values[0] ?? [];
-  const headers = headerRow.map((h, i) => {
-    const label = cellValue(h);
-    return label === null || label === "" ? `Columna ${i + 1}` : String(label);
-  });
-
-  const rows = values.slice(1).map((row) =>
+  // Full matrix: Excel row 1 = rows[0]. Column A = labels; other cols = quincenas.
+  // Do NOT treat the first row as headers (rows 1–3 are ingresos).
+  const width = Math.max(...values.map((r) => r.length), 1);
+  const headers = Array.from({ length: width }, (_, i) =>
+    i === 0 ? "Imputación" : `Q${i}`,
+  );
+  const rows = values.map((row) =>
     headers.map((_, i) => cellValue(row[i])),
   );
 

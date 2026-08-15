@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AutoCharts } from "@/components/AutoCharts";
 import { KpiCards } from "@/components/KpiCards";
 import { SheetTable } from "@/components/SheetTable";
-import { buildCharts, buildKpis } from "@/lib/dashboard";
+import { buildProyeccionView } from "@/lib/dashboard";
 
 type Worksheet = { id: string; name: string; position: number };
 type DriveItem = {
@@ -58,7 +58,11 @@ export function DashboardClient({
       localStorage.setItem(DRIVE_KEY, data.driveId);
     }
     setWorksheets(data.worksheets ?? []);
-    setActiveId(data.worksheets?.[0]?.id ?? null);
+    const preferred =
+      (data.worksheets as Worksheet[] | undefined)?.find((w) =>
+        /20262027/i.test(w.name),
+      ) ?? data.worksheets?.[0];
+    setActiveId(preferred?.id ?? null);
   }, []);
 
   const loadSummary = useCallback(
@@ -175,14 +179,18 @@ export function DashboardClient({
     }
   }, [activeId, itemId, driveId, loadSheet]);
 
-  const kpis = useMemo(
-    () => (sheet ? buildKpis(sheet.headers, sheet.rows) : []),
+  const view = useMemo(
+    () => (sheet ? buildProyeccionView(sheet.rows) : null),
     [sheet],
   );
-  const charts = useMemo(
-    () => (sheet ? buildCharts(sheet.headers, sheet.rows) : []),
-    [sheet],
-  );
+
+  const detailHeaders = ["Imputación", "Monto"];
+  const incomeTableRows =
+    view?.incomeRows.map((r) => [r.label, r.value] as (string | number)[]) ??
+    [];
+  const expenseTableRows =
+    view?.expenseRows.map((r) => [r.label, r.value] as (string | number)[]) ??
+    [];
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-4 py-8 sm:px-6">
@@ -340,16 +348,35 @@ export function DashboardClient({
               <p className="text-sm text-zinc-400">Cargando hoja…</p>
             )}
 
-            {sheet && !sheetLoading && (
+            {sheet && !sheetLoading && view && (
               <div className="flex flex-col gap-6">
-                <KpiCards kpis={kpis} />
-                <AutoCharts charts={charts} />
-                <section>
-                  <h2 className="mb-3 text-lg font-semibold text-white">
-                    {sheet.worksheet.name}
-                  </h2>
-                  <SheetTable headers={sheet.headers} rows={sheet.rows} />
-                </section>
+                <p className="text-sm text-emerald-300/90">
+                  Periodo: <strong className="text-white">{view.periodLabel}</strong>
+                  {" · "}
+                  hoja {sheet.worksheet.name}
+                </p>
+                <KpiCards kpis={view.kpis} />
+                <AutoCharts charts={view.charts} />
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <section>
+                    <h2 className="mb-3 text-lg font-semibold text-white">
+                      Ingresos (filas 1–3)
+                    </h2>
+                    <SheetTable
+                      headers={detailHeaders}
+                      rows={incomeTableRows}
+                    />
+                  </section>
+                  <section>
+                    <h2 className="mb-3 text-lg font-semibold text-white">
+                      Gastos de la quincena
+                    </h2>
+                    <SheetTable
+                      headers={detailHeaders}
+                      rows={expenseTableRows}
+                    />
+                  </section>
+                </div>
               </div>
             )}
           </>
