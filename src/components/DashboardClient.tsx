@@ -20,6 +20,7 @@ export function DashboardClient({
   userName?: string | null;
 }) {
   const [item, setItem] = useState<DriveItem | null>(null);
+  const [itemId, setItemId] = useState<string | null>(null);
   const [worksheets, setWorksheets] = useState<Worksheet[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sheet, setSheet] = useState<SheetPayload | null>(null);
@@ -35,6 +36,7 @@ export function DashboardClient({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "No se pudo leer la Excel");
       setItem(data.item);
+      setItemId(data.itemId ?? data.item?.id ?? null);
       setWorksheets(data.worksheets ?? []);
       const first = data.worksheets?.[0]?.id ?? null;
       setActiveId(first);
@@ -45,31 +47,36 @@ export function DashboardClient({
     }
   }, []);
 
-  const loadSheet = useCallback(async (worksheetId: string) => {
-    setSheetLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `/api/excel?worksheetId=${encodeURIComponent(worksheetId)}`,
-      );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "No se pudo leer la hoja");
-      setSheet(data);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Error desconocido");
-      setSheet(null);
-    } finally {
-      setSheetLoading(false);
-    }
-  }, []);
+  const loadSheet = useCallback(
+    async (worksheetId: string, resolvedItemId: string) => {
+      setSheetLoading(true);
+      setError(null);
+      try {
+        const qs = new URLSearchParams({
+          worksheetId,
+          itemId: resolvedItemId,
+        });
+        const res = await fetch(`/api/excel?${qs.toString()}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "No se pudo leer la hoja");
+        setSheet(data);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Error desconocido");
+        setSheet(null);
+      } finally {
+        setSheetLoading(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     void loadSummary();
   }, [loadSummary]);
 
   useEffect(() => {
-    if (activeId) void loadSheet(activeId);
-  }, [activeId, loadSheet]);
+    if (activeId && itemId) void loadSheet(activeId, itemId);
+  }, [activeId, itemId, loadSheet]);
 
   const kpis = useMemo(
     () =>

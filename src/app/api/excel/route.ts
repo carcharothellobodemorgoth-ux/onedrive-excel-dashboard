@@ -14,20 +14,19 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const itemId = process.env.EXCEL_DRIVE_ITEM_ID;
-  if (!itemId) {
-    return NextResponse.json(
-      { error: "EXCEL_DRIVE_ITEM_ID no configurado" },
-      { status: 500 },
-    );
-  }
-
   const worksheetId = request.nextUrl.searchParams.get("worksheetId");
+  const itemIdParam = request.nextUrl.searchParams.get("itemId");
 
   try {
     if (!worksheetId) {
-      const summary = await loadWorkbookSummary(session.accessToken, itemId);
+      const summary = await loadWorkbookSummary(session.accessToken);
       return NextResponse.json(summary);
+    }
+
+    let itemId = itemIdParam;
+    if (!itemId) {
+      const summary = await loadWorkbookSummary(session.accessToken);
+      itemId = summary.itemId;
     }
 
     const sheet = await getWorksheetData(
