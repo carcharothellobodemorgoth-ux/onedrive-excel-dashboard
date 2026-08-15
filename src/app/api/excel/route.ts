@@ -1,18 +1,31 @@
-import { auth } from "@/auth";
+import { auth, getGraphAccessToken } from "@/auth";
 import { getWorksheetData, loadWorkbookSummary } from "@/lib/graph";
 import { NextRequest, NextResponse } from "next/server";
 
-export async function GET(request: NextRequest) {
+async function requireSessionAndToken() {
   const session = await auth();
-  if (!session?.accessToken) {
-    return NextResponse.json({ error: "No autenticado" }, { status: 401 });
+  if (!session?.user) {
+    return {
+      error: NextResponse.json({ error: "No autenticado" }, { status: 401 }),
+    };
   }
-  if (session.error) {
-    return NextResponse.json(
-      { error: "Sesión expirada", detail: session.error },
-      { status: 401 },
-    );
+
+  const token = await getGraphAccessToken();
+  if (!token.ok) {
+    return {
+      error: NextResponse.json(
+        { error: token.error, code: "reauth_required" },
+        { status: token.status },
+      ),
+    };
   }
+
+  return { accessToken: token.accessToken };
+}
+
+export async function GET(request: NextRequest) {
+  const gate = await requireSessionAndToken();
+  if ("error" in gate) return gate.error;
 
   const worksheetId = request.nextUrl.searchParams.get("worksheetId");
   const itemIdParam = request.nextUrl.searchParams.get("itemId");
@@ -22,7 +35,7 @@ export async function GET(request: NextRequest) {
   try {
     if (!worksheetId) {
       const summary = await loadWorkbookSummary(
-        session.accessToken,
+        gate.accessToken,
         itemIdParam,
         driveIdParam,
         shareUrl,
@@ -37,7 +50,7 @@ export async function GET(request: NextRequest) {
     let driveId = driveIdParam;
     if (!itemId || !driveId) {
       const summary = await loadWorkbookSummary(
-        session.accessToken,
+        gate.accessToken,
         null,
         null,
         shareUrl,
@@ -50,7 +63,7 @@ export async function GET(request: NextRequest) {
     }
 
     const sheet = await getWorksheetData(
-      session.accessToken,
+      gate.accessToken,
       driveId,
       itemId,
       worksheetId,
@@ -58,20 +71,28 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(sheet);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Error Graph";
-    return NextResponse.json({ error: message }, { status: 502 });
+    const reauth =
+      /InvalidAuthenticationToken|JWT is not well formed|401/i.test(message);
+    return NextResponse.json(
+      {
+        error: reauth
+          ? "Sesión de Microsoft inválida. Cerrá sesión y volvé a entrar."
+          : message,
+        code: reauth ? "reauth_required" : undefined,
+      },
+      { status: reauth ? 401 : 502 },
+    );
   }
 }
 
 export async function POST(request: NextRequest) {
-  const session = await auth();
-  if (!session?.accessToken) {
-    return NextResponse.json({ error: "No autenticado" }, { status: 401 });
-  }
+  const gate = await requireSessionAndToken();
+  if ("error" in gate) return gate.error;
 
   try {
     const body = (await request.json()) as { shareUrl?: string };
     const summary = await loadWorkbookSummary(
-      session.accessToken,
+      gate.accessToken,
       null,
       null,
       body.shareUrl ?? null,
@@ -82,6 +103,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(summary);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Error Graph";
-    return NextResponse.json({ error: message }, { status: 502 });
+    const reauth =
+      /InvalidAuthenticationToken|JWT is not well formed|401/i.test(message);
+    return NextResponse.json(
+      {
+        error: reauth
+          ? "Sesión de Microsoft inválida. Cerrá sesión y volvé a entrar."
+          : message,
+        code: reauth ? "reauth_required" : undefined,
+      },
+      { status: reauth ? 401 : 502 },
+    );
   }
 }

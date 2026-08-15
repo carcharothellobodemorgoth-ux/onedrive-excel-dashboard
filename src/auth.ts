@@ -1,19 +1,20 @@
 import NextAuth from "next-auth";
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
+import { getToken } from "next-auth/jwt";
+import { cookies, headers } from "next/headers";
 
 declare module "next-auth" {
   interface Session {
-    accessToken?: string;
     error?: string;
   }
 }
 
-type TokenBag = {
-  accessToken?: string;
-  refreshToken?: string;
-  expiresAt?: number;
-  error?: string;
-};
+declare module "next-auth/jwt" {
+  interface JWT {
+    refreshToken?: string;
+    error?: string;
+  }
+}
 
 const scopes = [
   "openid",
@@ -25,15 +26,64 @@ const scopes = [
   "Files.Read.All",
 ].join(" ");
 
+const msaIssuer =
+  process.env.AUTH_MICROSOFT_ENTRA_ID_ISSUER ??
+  // Personal MSA tenant GUID (not the "consumers" alias — OIDC issuer must match)
+  "https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0";
+
+function tokenEndpoint(): string {
+  return `${msaIssuer.replace(/\/$/, "")}/oauth2/v2.0/token`;
+}
+
+async function exchangeRefreshToken(
+  refreshToken: string,
+): Promise<
+  | { ok: true; accessToken: string; refreshToken?: string }
+  | { ok: false; error: string }
+> {
+  const response = await fetch(tokenEndpoint(), {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: process.env.AUTH_MICROSOFT_ENTRA_ID_ID!,
+      client_secret: process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET!,
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      scope: scopes,
+    }),
+    cache: "no-store",
+  });
+
+  const refreshed = (await response.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    error?: string;
+    error_description?: string;
+  };
+
+  if (!response.ok || !refreshed.access_token) {
+    return {
+      ok: false,
+      error:
+        refreshed.error_description ??
+        refreshed.error ??
+        `Refresh failed (${response.status})`,
+    };
+  }
+
+  return {
+    ok: true,
+    accessToken: refreshed.access_token,
+    refreshToken: refreshed.refresh_token,
+  };
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
     MicrosoftEntraID({
       clientId: process.env.AUTH_MICROSOFT_ENTRA_ID_ID!,
       clientSecret: process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET!,
-      issuer:
-        process.env.AUTH_MICROSOFT_ENTRA_ID_ISSUER ??
-        // Personal MSA tenant GUID (not the "consumers" alias — OIDC issuer must match)
-        "https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0",
+      issuer: msaIssuer,
       authorization: {
         params: {
           scope: scopes,
@@ -43,71 +93,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
   callbacks: {
     async jwt({ token, account }) {
-      const t = token as typeof token & TokenBag;
-
-      if (account) {
-        t.accessToken = account.access_token;
-        t.refreshToken = account.refresh_token;
-        t.expiresAt = account.expires_at;
-        return t;
+      // Never persist Graph access_token in the session cookie — MSA tokens are large
+      // and truncate the Auth.js JWT (→ Graph IDX14100 "JWT is not well formed").
+      if (account?.refresh_token) {
+        token.refreshToken = account.refresh_token;
+        token.error = undefined;
       }
-
-      if (
-        typeof t.expiresAt === "number" &&
-        Date.now() < t.expiresAt * 1000 - 60_000
-      ) {
-        return t;
+      if ("accessToken" in token) {
+        delete (token as Record<string, unknown>).accessToken;
       }
-
-      if (!t.refreshToken || typeof t.refreshToken !== "string") {
-        return { ...t, error: "RefreshTokenMissing" };
+      if ("expiresAt" in token) {
+        delete (token as Record<string, unknown>).expiresAt;
       }
-
-      try {
-        const issuer =
-          process.env.AUTH_MICROSOFT_ENTRA_ID_ISSUER ??
-          "https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0";
-        const tokenUrl = `${issuer.replace(/\/$/, "")}/oauth2/v2.0/token`;
-        const response = await fetch(tokenUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            client_id: process.env.AUTH_MICROSOFT_ENTRA_ID_ID!,
-            client_secret: process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET!,
-            grant_type: "refresh_token",
-            refresh_token: t.refreshToken,
-            scope: scopes,
-          }),
-        });
-
-        const refreshed = (await response.json()) as {
-          access_token?: string;
-          refresh_token?: string;
-          expires_in?: number;
-        };
-
-        if (!response.ok || !refreshed.access_token) {
-          return { ...t, error: "RefreshAccessTokenError" };
-        }
-
-        return {
-          ...t,
-          accessToken: refreshed.access_token,
-          refreshToken: refreshed.refresh_token ?? t.refreshToken,
-          expiresAt: Math.floor(
-            Date.now() / 1000 + (refreshed.expires_in ?? 3600),
-          ),
-          error: undefined,
-        };
-      } catch {
-        return { ...t, error: "RefreshAccessTokenError" };
-      }
+      return token;
     },
     async session({ session, token }) {
-      const t = token as typeof token & TokenBag;
-      session.accessToken =
-        typeof t.accessToken === "string" ? t.accessToken : undefined;
-      session.error = typeof t.error === "string" ? t.error : undefined;
+      session.error =
+        typeof token.error === "string" ? token.error : undefined;
       return session;
     },
   },
@@ -116,3 +118,75 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   },
   trustHost: true,
 });
+
+/**
+ * Fresh Microsoft Graph access token for the current user.
+ * Uses only the refresh_token stored in the Auth.js JWT cookie.
+ */
+export async function getGraphAccessToken(): Promise<
+  { ok: true; accessToken: string } | { ok: false; status: number; error: string }
+> {
+  const headerList = await headers();
+  const cookieStore = await cookies();
+  const cookieHeader = cookieStore
+    .getAll()
+    .map((c) => `${c.name}=${c.value}`)
+    .join("; ");
+
+  const jwt = await getToken({
+    // Minimal req shape for next-auth/jwt in App Router
+    req: {
+      headers: {
+        cookie: cookieHeader,
+        ...Object.fromEntries(headerList.entries()),
+      },
+    } as Parameters<typeof getToken>[0]["req"],
+    secret: process.env.AUTH_SECRET,
+    secureCookie:
+      process.env.AUTH_URL?.startsWith("https://") ||
+      process.env.NODE_ENV === "production",
+  });
+
+  const refreshToken =
+    typeof jwt?.refreshToken === "string" ? jwt.refreshToken : null;
+
+  if (!refreshToken) {
+    return {
+      ok: false,
+      status: 401,
+      error:
+        "Sesión sin permiso de OneDrive. Cerrá sesión y volvé a entrar con Microsoft.",
+    };
+  }
+
+  try {
+    const exchanged = await exchangeRefreshToken(refreshToken);
+    if (!exchanged.ok) {
+      return {
+        ok: false,
+        status: 401,
+        error: `Sesión expirada (${exchanged.error}). Cerrá sesión y volvé a entrar.`,
+      };
+    }
+
+    if (
+      !exchanged.accessToken.includes(".") ||
+      exchanged.accessToken.length < 20
+    ) {
+      return {
+        ok: false,
+        status: 401,
+        error:
+          "Token de Microsoft inválido. Cerrá sesión y volvé a entrar.",
+      };
+    }
+
+    return { ok: true, accessToken: exchanged.accessToken };
+  } catch (e) {
+    return {
+      ok: false,
+      status: 401,
+      error: e instanceof Error ? e.message : "No se pudo renovar el token",
+    };
+  }
+}

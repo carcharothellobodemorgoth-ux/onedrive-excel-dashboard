@@ -264,7 +264,17 @@ export function DashboardClient({
 
       {error && candidates.length === 0 && (
         <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-          {error}
+          <p>{error}</p>
+          {/sesión|token|autentic|reauth|JWT|Microsoft/i.test(error) && (
+            <p className="mt-2">
+              <a
+                href="/api/auth/signout"
+                className="font-semibold text-white underline underline-offset-2 hover:text-emerald-200"
+              >
+                Cerrar sesión y volver a entrar
+              </a>
+            </p>
+          )}
         </div>
       )}
 
