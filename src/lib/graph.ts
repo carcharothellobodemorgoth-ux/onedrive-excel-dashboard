@@ -230,6 +230,90 @@ async function collectExcelCandidates(
   );
 }
 
+function toShareToken(url: string): string {
+  const base64 = Buffer.from(url.trim(), "utf8")
+    .toString("base64")
+    .replace(/=+$/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+  return `u!${base64}`;
+}
+
+/**
+ * Resolve a sharing / open link to driveId+itemId.
+ * Works for "anyone with the link" shares that never appear in sharedWithMe.
+ */
+export async function resolveFromShareUrl(
+  accessToken: string,
+  shareUrl: string,
+): Promise<ResolveResult> {
+  const trimmed = shareUrl.trim();
+  if (!trimmed) {
+    return {
+      ok: false,
+      candidates: [],
+      message: "Pegá un link de Compartir / OneDrive.",
+    };
+  }
+
+  const urls = Array.from(
+    new Set([
+      trimmed,
+      // common variants
+      trimmed.split("#")[0],
+      trimmed.replace("/edit.aspx", "/redir.aspx"),
+    ]),
+  );
+
+  let lastError = "";
+  for (const url of urls) {
+    const token = toShareToken(url);
+    const item = await graphFetchOk<DriveItem>(
+      accessToken,
+      `/shares/${token}/driveItem?$select=id,name,webUrl,lastModifiedDateTime,parentReference`,
+    );
+    if (item?.id && item.parentReference?.driveId) {
+      return {
+        ok: true,
+        itemId: item.id,
+        driveId: item.parentReference.driveId,
+        item,
+        strategy: "share-url",
+      };
+    }
+
+    // Some shares need an extra hop
+    const shareMeta = await graphFetchOk<{
+      error?: { message?: string };
+    }>(accessToken, `/shares/${token}`);
+    if (shareMeta && "error" in (shareMeta as object)) {
+      lastError = JSON.stringify(shareMeta).slice(0, 200);
+    }
+
+    const encodedPath = `/shares/${token}/driveItem`;
+    try {
+      const forced = await graphFetch<DriveItem>(accessToken, `${encodedPath}?$select=id,name,webUrl,lastModifiedDateTime,parentReference`);
+      if (forced.id && forced.parentReference?.driveId) {
+        return {
+          ok: true,
+          itemId: forced.id,
+          driveId: forced.parentReference.driveId,
+          item: forced,
+          strategy: "share-url-forced",
+        };
+      }
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  return {
+    ok: false,
+    candidates: [],
+    message: `No pude abrir ese link con Graph. En Excel: Compartir → Copiar vínculo (no la URL del navegador doc.aspx). Detalle: ${lastError.slice(0, 180)}`,
+  };
+}
+
 export async function resolveExcelItemId(
   accessToken: string,
   preferredItemId?: string | null,
@@ -405,6 +489,7 @@ export async function loadWorkbookSummary(
   accessToken: string,
   preferredItemId?: string | null,
   preferredDriveId?: string | null,
+  shareUrl?: string | null,
 ): Promise<
   | ({
       ok: true;
@@ -412,6 +497,17 @@ export async function loadWorkbookSummary(
     } & ResolvedWorkbook)
   | { ok: false; candidates: DriveItem[]; message: string }
 > {
+  if (shareUrl?.trim()) {
+    const fromShare = await resolveFromShareUrl(accessToken, shareUrl);
+    if (!fromShare.ok) return fromShare;
+    const worksheets = await listWorksheets(
+      accessToken,
+      fromShare.driveId,
+      fromShare.itemId,
+    );
+    return { ...fromShare, worksheets };
+  }
+
   const resolved = await resolveExcelItemId(
     accessToken,
     preferredItemId,

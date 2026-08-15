@@ -38,6 +38,26 @@ export function DashboardClient({
   const [loading, setLoading] = useState(true);
   const [sheetLoading, setSheetLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [shareUrl, setShareUrl] = useState("");
+  const [shareBusy, setShareBusy] = useState(false);
+
+  const applySummary = useCallback((data: {
+    item: DriveItem;
+    itemId: string;
+    driveId: string;
+    worksheets: Worksheet[];
+  }) => {
+    setItem(data.item);
+    setItemId(data.itemId);
+    setDriveId(data.driveId);
+    setCandidates([]);
+    if (typeof window !== "undefined") {
+      localStorage.setItem(ITEM_KEY, data.itemId);
+      localStorage.setItem(DRIVE_KEY, data.driveId);
+    }
+    setWorksheets(data.worksheets ?? []);
+    setActiveId(data.worksheets?.[0]?.id ?? null);
+  }, []);
 
   const loadSummary = useCallback(
     async (preferred?: { itemId?: string | null; driveId?: string | null }) => {
@@ -55,7 +75,6 @@ export function DashboardClient({
             : null);
 
         const qs = new URLSearchParams();
-        // Prefer path resolution first; only pass stored ids if both exist
         if (storedItem && storedDrive) {
           qs.set("itemId", storedItem);
           qs.set("driveId", storedDrive);
@@ -75,25 +94,38 @@ export function DashboardClient({
           return;
         }
 
-        if (!res.ok) throw new Error(data.error ?? "No se pudo leer la Excel");
-
-        setItem(data.item);
-        setItemId(data.itemId ?? data.item?.id ?? null);
-        setDriveId(data.driveId ?? null);
-        if (typeof window !== "undefined" && data.itemId && data.driveId) {
-          localStorage.setItem(ITEM_KEY, data.itemId);
-          localStorage.setItem(DRIVE_KEY, data.driveId);
-        }
-        setWorksheets(data.worksheets ?? []);
-        setActiveId(data.worksheets?.[0]?.id ?? null);
+        if (!res.ok) throw new Error(data.error ?? data.message ?? "No se pudo leer la Excel");
+        applySummary(data);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Error desconocido");
       } finally {
         setLoading(false);
       }
     },
-    [],
+    [applySummary],
   );
+
+  const openShareUrl = useCallback(async () => {
+    if (!shareUrl.trim()) return;
+    setShareBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/excel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shareUrl: shareUrl.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.message ?? data.error ?? "No se pudo abrir el link");
+      }
+      applySummary(data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error desconocido");
+    } finally {
+      setShareBusy(false);
+    }
+  }, [shareUrl, applySummary]);
 
   const loadSheet = useCallback(
     async (
@@ -199,8 +231,30 @@ export function DashboardClient({
             ¿Cuál es la planilla?
           </h2>
           <p className="mt-1 text-sm text-zinc-300">
-            Buscamos en la carpeta Proyecciones. Elegí{" "}
-            <strong>PROYECCIÓN 26-27</strong> si aparece.
+            <strong>PROYECCIÓN 26-27</strong> no está en tu drive ni en
+            “Compartido conmigo” (típico de links “cualquiera con el vínculo”).
+            Pegá el link de <strong>Compartir → Copiar vínculo</strong> desde
+            Excel:
+          </p>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            <input
+              value={shareUrl}
+              onChange={(e) => setShareUrl(e.target.value)}
+              placeholder="https://1drv.ms/... o link de Compartir"
+              className="min-w-0 flex-1 rounded-xl border border-white/15 bg-zinc-950/60 px-3 py-2 text-sm text-white placeholder:text-zinc-500"
+            />
+            <button
+              type="button"
+              disabled={shareBusy || !shareUrl.trim()}
+              onClick={() => void openShareUrl()}
+              className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-zinc-950 disabled:opacity-50"
+            >
+              {shareBusy ? "Abriendo…" : "Abrir link"}
+            </button>
+          </div>
+          <p className="mt-3 text-xs text-zinc-400">
+            La URL del navegador (`doc.aspx?resid=...`) suele fallar; el vínculo
+            de Compartir sí funciona.
           </p>
           <ul className="mt-4 grid gap-2 sm:grid-cols-2">
             {candidates.map((c) => (
@@ -227,6 +281,34 @@ export function DashboardClient({
               </li>
             ))}
           </ul>
+        </section>
+      )}
+
+      {!loading && !item && candidates.length === 0 && (
+        <section className="rounded-2xl border border-white/10 bg-white/5 p-5">
+          <h2 className="text-lg font-semibold text-white">
+            Abrir planilla por link
+          </h2>
+          <p className="mt-1 text-sm text-zinc-300">
+            En Excel Online: <strong>Compartir → Copiar vínculo</strong> y
+            pegalo acá.
+          </p>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            <input
+              value={shareUrl}
+              onChange={(e) => setShareUrl(e.target.value)}
+              placeholder="https://1drv.ms/..."
+              className="min-w-0 flex-1 rounded-xl border border-white/15 bg-zinc-950/60 px-3 py-2 text-sm text-white placeholder:text-zinc-500"
+            />
+            <button
+              type="button"
+              disabled={shareBusy || !shareUrl.trim()}
+              onClick={() => void openShareUrl()}
+              className="rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-zinc-950 disabled:opacity-50"
+            >
+              {shareBusy ? "Abriendo…" : "Abrir link"}
+            </button>
+          </div>
         </section>
       )}
 

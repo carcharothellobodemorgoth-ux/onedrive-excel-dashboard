@@ -17,6 +17,7 @@ export async function GET(request: NextRequest) {
   const worksheetId = request.nextUrl.searchParams.get("worksheetId");
   const itemIdParam = request.nextUrl.searchParams.get("itemId");
   const driveIdParam = request.nextUrl.searchParams.get("driveId");
+  const shareUrl = request.nextUrl.searchParams.get("shareUrl");
 
   try {
     if (!worksheetId) {
@@ -24,6 +25,7 @@ export async function GET(request: NextRequest) {
         session.accessToken,
         itemIdParam,
         driveIdParam,
+        shareUrl,
       );
       if (!summary.ok) {
         return NextResponse.json(summary, { status: 409 });
@@ -34,7 +36,12 @@ export async function GET(request: NextRequest) {
     let itemId = itemIdParam;
     let driveId = driveIdParam;
     if (!itemId || !driveId) {
-      const summary = await loadWorkbookSummary(session.accessToken);
+      const summary = await loadWorkbookSummary(
+        session.accessToken,
+        null,
+        null,
+        shareUrl,
+      );
       if (!summary.ok) {
         return NextResponse.json(summary, { status: 409 });
       }
@@ -49,6 +56,30 @@ export async function GET(request: NextRequest) {
       worksheetId,
     );
     return NextResponse.json(sheet);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Error Graph";
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
+}
+
+export async function POST(request: NextRequest) {
+  const session = await auth();
+  if (!session?.accessToken) {
+    return NextResponse.json({ error: "No autenticado" }, { status: 401 });
+  }
+
+  try {
+    const body = (await request.json()) as { shareUrl?: string };
+    const summary = await loadWorkbookSummary(
+      session.accessToken,
+      null,
+      null,
+      body.shareUrl ?? null,
+    );
+    if (!summary.ok) {
+      return NextResponse.json(summary, { status: 409 });
+    }
+    return NextResponse.json(summary);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Error Graph";
     return NextResponse.json({ error: message }, { status: 502 });
