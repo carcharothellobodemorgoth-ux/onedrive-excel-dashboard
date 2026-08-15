@@ -150,11 +150,16 @@ export function buildProyeccionView(rows: Cell[][]): ProyeccionView {
     /^lo que queda$/i,
     /^transf/i,
   ]);
+  const tarjetas = sumRows(rows, 21, 28, col, SKIP);
   const neteo = valueAt(rows, 35, col);
   const gastosPost = sumRows(rows, 37, 41, col, SKIP);
   const balanceFinal = valueAt(rows, 44, col);
 
   const incomeRows = listRows(rows, 1, 3, col, SKIP);
+  const cardRows = listRows(rows, 21, 28, col, SKIP).map((r) => ({
+    ...r,
+    value: Math.abs(r.value),
+  }));
   const expenseRows = [
     ...listRows(rows, 4, 34, col, [
       ...SKIP,
@@ -168,6 +173,12 @@ export function buildProyeccionView(rows: Cell[][]): ProyeccionView {
     .sort((a, b) => b.value - a.value);
 
   const kpis: Kpi[] = [
+    {
+      id: "tarjetas",
+      label: "Gasto en tarjeta",
+      value: formatMoney(Math.abs(tarjetas)),
+      hint: `Filas 21–28 · ${periodLabel}`,
+    },
     {
       id: "ingresos",
       label: "Ingresos",
@@ -201,6 +212,18 @@ export function buildProyeccionView(rows: Cell[][]): ProyeccionView {
   ];
 
   const charts: ChartSeries[] = [];
+
+  if (cardRows.length > 0) {
+    charts.push({
+      name: `Tarjetas · ${periodLabel}`,
+      data: cardRows
+        .sort((a, b) => b.value - a.value)
+        .map((r) => ({
+          label: r.label.slice(0, 28),
+          value: r.value,
+        })),
+    });
+  }
 
   if (expenseRows.length > 0) {
     charts.push({
