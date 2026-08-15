@@ -19,13 +19,22 @@ export async function GET(request: NextRequest) {
 
   try {
     if (!worksheetId) {
-      const summary = await loadWorkbookSummary(session.accessToken);
+      const summary = await loadWorkbookSummary(
+        session.accessToken,
+        itemIdParam,
+      );
+      if (!summary.ok) {
+        return NextResponse.json(summary, { status: 409 });
+      }
       return NextResponse.json(summary);
     }
 
     let itemId = itemIdParam;
     if (!itemId) {
       const summary = await loadWorkbookSummary(session.accessToken);
+      if (!summary.ok) {
+        return NextResponse.json(summary, { status: 409 });
+      }
       itemId = summary.itemId;
     }
 

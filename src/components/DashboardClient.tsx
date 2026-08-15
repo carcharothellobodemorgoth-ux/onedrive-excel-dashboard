@@ -7,12 +7,19 @@ import { SheetTable } from "@/components/SheetTable";
 import { buildCharts, buildKpis } from "@/lib/dashboard";
 
 type Worksheet = { id: string; name: string; position: number };
-type DriveItem = { id: string; name: string; webUrl?: string };
+type DriveItem = {
+  id: string;
+  name: string;
+  webUrl?: string;
+  lastModifiedDateTime?: string;
+};
 type SheetPayload = {
   worksheet: Worksheet;
   headers: string[];
   rows: (string | number | boolean | null)[][];
 };
+
+const STORAGE_KEY = "excel-dashboard-item-id";
 
 export function DashboardClient({
   userName,
@@ -22,24 +29,45 @@ export function DashboardClient({
   const [item, setItem] = useState<DriveItem | null>(null);
   const [itemId, setItemId] = useState<string | null>(null);
   const [worksheets, setWorksheets] = useState<Worksheet[]>([]);
+  const [candidates, setCandidates] = useState<DriveItem[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sheet, setSheet] = useState<SheetPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [sheetLoading, setSheetLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadSummary = useCallback(async () => {
+  const loadSummary = useCallback(async (preferred?: string | null) => {
     setLoading(true);
     setError(null);
+    setCandidates([]);
     try {
-      const res = await fetch("/api/excel");
+      const stored =
+        preferred ??
+        (typeof window !== "undefined"
+          ? localStorage.getItem(STORAGE_KEY)
+          : null);
+      const qs = stored ? `?itemId=${encodeURIComponent(stored)}` : "";
+      const res = await fetch(`/api/excel${qs}`);
       const data = await res.json();
+
+      if (res.status === 409 && data.candidates) {
+        setCandidates(data.candidates);
+        setError(data.message ?? "Elegí una planilla");
+        setItem(null);
+        setItemId(null);
+        setWorksheets([]);
+        return;
+      }
+
       if (!res.ok) throw new Error(data.error ?? "No se pudo leer la Excel");
+
       setItem(data.item);
       setItemId(data.itemId ?? data.item?.id ?? null);
+      if (data.itemId && typeof window !== "undefined") {
+        localStorage.setItem(STORAGE_KEY, data.itemId);
+      }
       setWorksheets(data.worksheets ?? []);
-      const first = data.worksheets?.[0]?.id ?? null;
-      setActiveId(first);
+      setActiveId(data.worksheets?.[0]?.id ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error desconocido");
     } finally {
@@ -79,13 +107,11 @@ export function DashboardClient({
   }, [activeId, itemId, loadSheet]);
 
   const kpis = useMemo(
-    () =>
-      sheet ? buildKpis(sheet.headers, sheet.rows) : [],
+    () => (sheet ? buildKpis(sheet.headers, sheet.rows) : []),
     [sheet],
   );
   const charts = useMemo(
-    () =>
-      sheet ? buildCharts(sheet.headers, sheet.rows) : [],
+    () => (sheet ? buildCharts(sheet.headers, sheet.rows) : []),
     [sheet],
   );
 
@@ -106,7 +132,12 @@ export function DashboardClient({
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={() => void loadSummary()}
+            onClick={() => {
+              if (typeof window !== "undefined") {
+                localStorage.removeItem(STORAGE_KEY);
+              }
+              void loadSummary(null);
+            }}
             className="rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-emerald-400"
           >
             Actualizar
@@ -120,50 +151,85 @@ export function DashboardClient({
         </div>
       </header>
 
-      {error && (
+      {error && candidates.length === 0 && (
         <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
           {error}
         </div>
       )}
 
+      {candidates.length > 0 && (
+        <section className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-5">
+          <h2 className="text-lg font-semibold text-white">
+            ¿Cuál es la planilla del link de OneDrive?
+          </h2>
+          <p className="mt-1 text-sm text-zinc-300">
+            El resid del link no coincide con un ID de Graph. Elegí el archivo
+            correcto (se guarda en este navegador).
+          </p>
+          <ul className="mt-4 grid gap-2 sm:grid-cols-2">
+            {candidates.map((c) => (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    localStorage.setItem(STORAGE_KEY, c.id);
+                    void loadSummary(c.id);
+                  }}
+                  className="w-full rounded-xl border border-white/10 bg-zinc-950/40 px-4 py-3 text-left hover:border-emerald-400/40 hover:bg-emerald-500/10"
+                >
+                  <span className="block font-medium text-white">{c.name}</span>
+                  <span className="mt-1 block truncate text-xs text-zinc-500">
+                    {c.lastModifiedDateTime
+                      ? new Date(c.lastModifiedDateTime).toLocaleString("es")
+                      : c.id}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {loading ? (
         <p className="text-zinc-400">Cargando workbook…</p>
       ) : (
-        <>
-          <nav className="flex flex-wrap gap-2">
-            {worksheets.map((ws) => (
-              <button
-                key={ws.id}
-                type="button"
-                onClick={() => setActiveId(ws.id)}
-                className={`rounded-full px-4 py-2 text-sm font-medium transition ${
-                  activeId === ws.id
-                    ? "bg-white text-zinc-950"
-                    : "bg-white/5 text-zinc-300 hover:bg-white/10"
-                }`}
-              >
-                {ws.name}
-              </button>
-            ))}
-          </nav>
+        item && (
+          <>
+            <nav className="flex flex-wrap gap-2">
+              {worksheets.map((ws) => (
+                <button
+                  key={ws.id}
+                  type="button"
+                  onClick={() => setActiveId(ws.id)}
+                  className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+                    activeId === ws.id
+                      ? "bg-white text-zinc-950"
+                      : "bg-white/5 text-zinc-300 hover:bg-white/10"
+                  }`}
+                >
+                  {ws.name}
+                </button>
+              ))}
+            </nav>
 
-          {sheetLoading && (
-            <p className="text-sm text-zinc-400">Cargando hoja…</p>
-          )}
+            {sheetLoading && (
+              <p className="text-sm text-zinc-400">Cargando hoja…</p>
+            )}
 
-          {sheet && !sheetLoading && (
-            <div className="flex flex-col gap-6">
-              <KpiCards kpis={kpis} />
-              <AutoCharts charts={charts} />
-              <section>
-                <h2 className="mb-3 text-lg font-semibold text-white">
-                  {sheet.worksheet.name}
-                </h2>
-                <SheetTable headers={sheet.headers} rows={sheet.rows} />
-              </section>
-            </div>
-          )}
-        </>
+            {sheet && !sheetLoading && (
+              <div className="flex flex-col gap-6">
+                <KpiCards kpis={kpis} />
+                <AutoCharts charts={charts} />
+                <section>
+                  <h2 className="mb-3 text-lg font-semibold text-white">
+                    {sheet.worksheet.name}
+                  </h2>
+                  <SheetTable headers={sheet.headers} rows={sheet.rows} />
+                </section>
+              </div>
+            )}
+          </>
+        )
       )}
     </div>
   );
