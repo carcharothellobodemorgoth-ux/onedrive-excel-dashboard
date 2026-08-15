@@ -8,12 +8,11 @@ declare module "next-auth" {
   }
 }
 
-declare module "next-auth/jwt" {
-  interface JWT {
-    refreshToken?: string;
-    error?: string;
-  }
-}
+type AppJWT = {
+  refreshToken?: string;
+  error?: string;
+  sub?: string;
+};
 
 const scopes = [
   "openid",
@@ -130,50 +129,52 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
   callbacks: {
     async jwt({ token, account }) {
+      const t = token as typeof token & AppJWT;
       // Keep only refreshToken in the cookie (MSA access tokens are huge and
       // truncate Auth.js cookies → Graph "JWT is not well formed").
       if (account) {
         if (account.refresh_token) {
-          token.refreshToken = account.refresh_token;
+          t.refreshToken = account.refresh_token;
         }
-        if (account.access_token && token.sub) {
+        if (account.access_token && t.sub) {
           const expiresIn = account.expires_at
             ? Math.max(60, account.expires_at - Math.floor(Date.now() / 1000))
             : 3600;
-          cacheAccess(token.sub, account.access_token, expiresIn);
+          cacheAccess(t.sub, account.access_token, expiresIn);
         }
-        token.error = undefined;
-        return token;
+        t.error = undefined;
+        return t;
       }
 
-      if (token.sub && cachedAccess(token.sub)) {
-        token.error = undefined;
-        return token;
+      if (t.sub && cachedAccess(t.sub)) {
+        t.error = undefined;
+        return t;
       }
 
-      if (!token.refreshToken || typeof token.refreshToken !== "string") {
-        return { ...token, error: "RefreshTokenMissing" };
+      if (!t.refreshToken || typeof t.refreshToken !== "string") {
+        return { ...t, error: "RefreshTokenMissing" };
       }
 
-      const exchanged = await exchangeRefreshToken(token.refreshToken);
+      const exchanged = await exchangeRefreshToken(t.refreshToken);
       if (!exchanged.ok) {
-        return { ...token, error: `RefreshAccessTokenError:${exchanged.error}` };
+        return { ...t, error: `RefreshAccessTokenError:${exchanged.error}` };
       }
 
-      if (token.sub) {
-        cacheAccess(token.sub, exchanged.accessToken, exchanged.expiresIn);
+      if (t.sub) {
+        cacheAccess(t.sub, exchanged.accessToken, exchanged.expiresIn);
       }
       if (exchanged.refreshToken) {
-        token.refreshToken = exchanged.refreshToken;
+        t.refreshToken = exchanged.refreshToken;
       }
-      token.error = undefined;
-      return token;
+      t.error = undefined;
+      return t;
     },
     async session({ session, token }) {
+      const t = token as typeof token & AppJWT;
       session.error =
-        typeof token.error === "string" ? token.error : undefined;
+        typeof t.error === "string" ? t.error : undefined;
       const access = cachedAccess(
-        typeof token.sub === "string" ? token.sub : undefined,
+        typeof t.sub === "string" ? t.sub : undefined,
       );
       session.accessToken = access;
       return session;
