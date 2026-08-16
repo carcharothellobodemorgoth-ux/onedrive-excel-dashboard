@@ -615,10 +615,6 @@ export function buildProyeccionView(
     bal.postFrom !== null && bal.postTo !== null && bal.postTo >= bal.postFrom
       ? sumRowsCols(rows, layout, bal.postFrom, bal.postTo, cols, SKIP)
       : 0;
-  const neteo =
-    bal.neteoRow !== null
-      ? valueAtQuincena(rows, layout, bal.neteoRow, lastCol)
-      : 0;
   const balanceSheet = valueAtQuincena(
     rows,
     layout,
