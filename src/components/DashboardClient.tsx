@@ -465,7 +465,9 @@ export function DashboardClient({
         item && (
           <>
             <nav className="flex flex-wrap gap-2">
-              {worksheets.map((ws) => (
+              {worksheets
+                .filter((ws) => !/gastos\s*varios/i.test(ws.name))
+                .map((ws) => (
                 <button
                   key={ws.id}
                   type="button"
@@ -479,13 +481,42 @@ export function DashboardClient({
                   {ws.name}
                 </button>
               ))}
+              <Link
+                href="/dashboard/gastos"
+                className="rounded-full bg-white/5 px-4 py-2 text-sm font-medium text-emerald-300 hover:bg-emerald-500/15"
+              >
+                Gastos Varios → cargar
+              </Link>
             </nav>
 
             {sheetLoading && (
               <p className="text-sm text-zinc-400">Cargando hoja…</p>
             )}
 
-            {sheet && !sheetLoading && view && (
+            {sheet &&
+              !sheetLoading &&
+              /gastos\s*varios/i.test(sheet.worksheet.name) && (
+                <section className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 p-6">
+                  <h2 className="text-xl font-semibold text-white">
+                    Cargar gastos varios
+                  </h2>
+                  <p className="mt-2 text-sm text-zinc-300">
+                    Esta hoja no es la proyección. Los gastos se cargan con el
+                    formulario dedicado.
+                  </p>
+                  <Link
+                    href="/dashboard/gastos"
+                    className="mt-4 inline-flex rounded-full bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-zinc-950 hover:bg-emerald-400"
+                  >
+                    Ir a cargar gasto
+                  </Link>
+                </section>
+              )}
+
+            {sheet &&
+              !sheetLoading &&
+              view &&
+              !/gastos\s*varios/i.test(sheet.worksheet.name) && (
               <div className="flex flex-col gap-6">
                 <PeriodSelector
                   value={period}
