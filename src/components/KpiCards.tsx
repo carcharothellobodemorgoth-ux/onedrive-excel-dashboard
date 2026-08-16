@@ -27,7 +27,9 @@ export function KpiCards({ kpis }: { kpis: Kpi[] }) {
             <p className="mt-2 text-3xl font-semibold tracking-tight text-white">
               {kpi.value}
             </p>
-            <p className="mt-1 text-sm text-zinc-400">{kpi.hint}</p>
+            {kpi.hint ? (
+              <p className="mt-1 text-sm text-zinc-400">{kpi.hint}</p>
+            ) : null}
           </article>
         );
       })}

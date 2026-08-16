@@ -702,41 +702,36 @@ export function buildProyeccionView(
       .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label, "es"));
   })();
 
-  const cardHint =
-    bal.cardRows.length > 0
-      ? `Categoría Tarjetas · filas ${bal.cardRows.join(", ")} · ${periodLabel}`
-      : `Sin filas con categoría Tarjetas · ${periodLabel}`;
-
   const kpis: Kpi[] = [
     {
       id: "final",
       label: labelAt(rows, bal.balanceRow) || "Lo que queda",
       value: formatMoney(balanceFinal),
-      hint: `Fila ${bal.balanceRow} − Gastos Varios · fin (${quincenaLabel(lastCol)})`,
+      hint: "",
     },
     {
       id: "gastos-varios",
       label: "Gastos varios",
       value: formatMoney(gastosVariosPeriodo),
-      hint: `Hoja Gastos Varios · ${periodLabel}`,
+      hint: "",
     },
     {
       id: "tarjetas",
       label: "Gasto en tarjeta",
       value: formatMoney(Math.abs(tarjetas)),
-      hint: cardHint,
+      hint: "",
     },
     {
       id: "ingresos",
       label: "Ingresos",
       value: formatMoney(ingresos),
-      hint: `Filas ${bal.incomeFrom}–${bal.incomeTo} · ${periodLabel}`,
+      hint: "",
     },
     {
       id: "gastos",
       label: "Gastos",
       value: formatMoney(gastos),
-      hint: `Filas ${bal.expenseFrom}–${bal.expenseTo} (antes del neteo)`,
+      hint: "",
     },
   ];
 
