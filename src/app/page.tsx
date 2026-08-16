@@ -46,8 +46,8 @@ export default async function HomePage() {
         </form>
 
         <p className="mt-6 text-xs text-zinc-500">
-          Solo lectura. Necesitás un App Registration de Azure con cuentas
-          personales (consumers).
+          Lectura + escritura en OneDrive (hoja Gastos Varios). App Registration
+          Azure con cuentas personales y permisos Files.Read / Files.ReadWrite.
         </p>
       </div>
     </main>

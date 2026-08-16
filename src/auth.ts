@@ -15,7 +15,7 @@ type TokenBag = {
   error?: string;
 };
 
-const scopes = [
+const readScopes = [
   "openid",
   "profile",
   "email",
@@ -23,6 +23,11 @@ const scopes = [
   "User.Read",
   "Files.Read",
   "Files.Read.All",
+].join(" ");
+
+/** Login pide escritura; el refresh NO debe pedir scopes nuevos (rompe tokens viejos). */
+const loginScopes = [
+  readScopes,
   "Files.ReadWrite",
   "Files.ReadWrite.All",
 ].join(" ");
@@ -41,6 +46,47 @@ function tokenUrlFromIssuer(issuer: string): string {
   return `${trimmed}/oauth2/v2.0/token`;
 }
 
+async function refreshAccessToken(refreshToken: string): Promise<{
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  error?: string;
+  error_description?: string;
+  status: number;
+}> {
+  // Omit scope → Microsoft reuses originally consented scopes (safe for old sessions).
+  const response = await fetch(tokenUrlFromIssuer(msaIssuer), {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: process.env.AUTH_MICROSOFT_ENTRA_ID_ID!,
+      client_secret: process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET!,
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    }),
+    cache: "no-store",
+  });
+
+  const raw = await response.text();
+  let refreshed: {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    error?: string;
+    error_description?: string;
+  } = {};
+  try {
+    refreshed = raw ? (JSON.parse(raw) as typeof refreshed) : {};
+  } catch {
+    return {
+      status: response.status,
+      error: "non-json",
+      error_description: `non-json:${response.status}`,
+    };
+  }
+  return { ...refreshed, status: response.status };
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
     MicrosoftEntraID({
@@ -49,7 +95,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       issuer: msaIssuer,
       authorization: {
         params: {
-          scope: scopes,
+          scope: loginScopes,
+          // Force consent so write scopes appear after we added them
+          prompt: "select_account",
         },
       },
     }),
@@ -84,43 +132,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
 
       try {
-        const response = await fetch(tokenUrlFromIssuer(msaIssuer), {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            client_id: process.env.AUTH_MICROSOFT_ENTRA_ID_ID!,
-            client_secret: process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET!,
-            grant_type: "refresh_token",
-            refresh_token: t.refreshToken,
-            scope: scopes,
-          }),
-          cache: "no-store",
-        });
+        const refreshed = await refreshAccessToken(t.refreshToken);
 
-        const raw = await response.text();
-        let refreshed: {
-          access_token?: string;
-          refresh_token?: string;
-          expires_in?: number;
-          error?: string;
-          error_description?: string;
-        } = {};
-        try {
-          refreshed = raw ? (JSON.parse(raw) as typeof refreshed) : {};
-        } catch {
-          return {
-            ...t,
-            accessToken: undefined,
-            error: `RefreshAccessTokenError:non-json:${response.status}`,
-          };
-        }
-
-        if (!response.ok || !refreshed.access_token) {
+        if (refreshed.status >= 400 || !refreshed.access_token) {
           return {
             ...t,
             accessToken: undefined,
             error: `RefreshAccessTokenError:${
-              refreshed.error_description ?? refreshed.error ?? response.status
+              refreshed.error_description ?? refreshed.error ?? refreshed.status
             }`,
           };
         }
