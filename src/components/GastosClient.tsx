@@ -8,6 +8,7 @@ import {
   listQuincenaOptions,
   quincenaLabel,
 } from "@/lib/dashboard";
+import { isGastosVariosExpenseRow } from "@/lib/graph";
 
 type Worksheet = { id: string; name: string; position: number };
 type DriveItem = {
@@ -120,15 +121,10 @@ export function GastosClient({ userName }: { userName?: string | null }) {
           amount: number;
           quincena: number;
         }[] = [];
-        let start = 0;
-        const first = String(rows[0]?.[0] ?? "")
-          .trim()
-          .toLowerCase();
-        if (first === "descripción" || first === "descripcion") start = 1;
-        for (let r = rows.length - 1; r >= start && parsed.length < 12; r--) {
+        for (let r = rows.length - 1; r >= 0 && parsed.length < 12; r--) {
           const row = rows[r];
+          if (!isGastosVariosExpenseRow(row)) continue;
           const desc = String(row?.[0] ?? "").trim();
-          if (!desc) continue;
           const cat = String(row?.[1] ?? "").trim();
           let foundQ = 0;
           let foundAmt = 0;

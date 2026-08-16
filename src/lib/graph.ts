@@ -742,8 +742,48 @@ export async function appendGastoVarios(
 }
 
 /**
+ * True when column A looks like a real expense line (not headers / balance row).
+ * User layout: rows 1–2 headers, row 3 "Lo que queda", row 4+ expenses.
+ */
+export function isGastosVariosExpenseRow(
+  row: (string | number | boolean | null)[] | undefined,
+): boolean {
+  if (!row) return false;
+  const label = String(row[0] ?? "")
+    .trim()
+    .toLowerCase();
+  if (!label) return false;
+  if (
+    /^(descripci[oó]n|categoria|categoría|lo que queda|resta|total|mes|agosto|septiembre|octubre|noviembre|diciembre|enero|febrero|marzo|abril|mayo|junio|julio|1era|2da|1ª|2ª|q\d+)$/i.test(
+      label,
+    )
+  ) {
+    return false;
+  }
+  // Month-only header cells sometimes land in col A when merged oddly
+  if (/^(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\b/i.test(label)) {
+    return false;
+  }
+  return true;
+}
+
+function cellToAbsNumber(cell: string | number | boolean | null | undefined): number {
+  if (typeof cell === "number" && Number.isFinite(cell)) return Math.abs(cell);
+  if (typeof cell === "string" && cell.trim()) {
+    const cleaned = cell
+      .replace(/\$/g, "")
+      .replace(/\s/g, "")
+      .replace(/\./g, "")
+      .replace(",", ".");
+    const parsed = Number(cleaned);
+    if (Number.isFinite(parsed)) return Math.abs(parsed);
+  }
+  return 0;
+}
+
+/**
  * Sum absolute amounts per quincena from a Gastos Varios matrix (full usedRange).
- * Skips header row when first cell looks like "Descripción".
+ * Only counts expense rows — skips headers and the "Lo que queda" mirror row.
  */
 export function sumGastosVariosByQuincena(
   rows: (string | number | boolean | null)[][],
@@ -752,25 +792,12 @@ export function sumGastosVariosByQuincena(
   for (let q = 1; q <= GASTOS_VARIOS_QUINCENAS; q++) out[q] = 0;
   if (!rows.length) return out;
 
-  let start = 0;
-  const first = String(rows[0]?.[0] ?? "")
-    .trim()
-    .toLowerCase();
-  if (first === "descripción" || first === "descripcion") start = 1;
-
-  for (let r = start; r < rows.length; r++) {
+  for (let r = 0; r < rows.length; r++) {
     const row = rows[r];
-    if (!row) continue;
+    if (!isGastosVariosExpenseRow(row)) continue;
     for (let q = 1; q <= GASTOS_VARIOS_QUINCENAS; q++) {
-      const cell = row[GASTOS_VARIOS_DATA_START + q - 1];
-      let n = 0;
-      if (typeof cell === "number" && Number.isFinite(cell)) n = cell;
-      else if (typeof cell === "string" && cell.trim()) {
-        const cleaned = cell.replace(/\$/g, "").replace(/\s/g, "").replace(/\./g, "").replace(",", ".");
-        const parsed = Number(cleaned);
-        if (Number.isFinite(parsed)) n = parsed;
-      }
-      if (n !== 0) out[q] = (out[q] ?? 0) + Math.abs(n);
+      const n = cellToAbsNumber(row[GASTOS_VARIOS_DATA_START + q - 1]);
+      if (n !== 0) out[q] = (out[q] ?? 0) + n;
     }
   }
   return out;
