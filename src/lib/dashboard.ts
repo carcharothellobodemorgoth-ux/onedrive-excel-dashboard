@@ -461,19 +461,32 @@ function findExcelRowByLabel(rows: Cell[][], re: RegExp): number | null {
   return findExcelRowsByLabel(rows, re)[0] ?? null;
 }
 
+function findExcelRowsByCategory(
+  rows: Cell[][],
+  categoryRe: RegExp,
+  excelFrom: number,
+  excelTo: number,
+): number[] {
+  const out: number[] = [];
+  const from = Math.max(1, excelFrom);
+  const to = Math.min(rows.length, excelTo);
+  for (let r = from; r <= to; r++) {
+    const cat = rawCategoryAt(rows, r);
+    if (cat && categoryRe.test(cat)) out.push(r);
+  }
+  return out;
+}
+
 /**
  * Detect income / expenses / resta / lo que queda / cards by column A labels
  * so the sheet can be compacted (e.g. all balance data in rows 1–37).
  */
 export function detectBalanceLayout(rows: Cell[][]): BalanceLayout {
+  const sheetLayout = detectSheetLayout(rows);
   const balanceRow =
     findExcelRowByLabel(rows, /^lo que queda$/i) ??
     findExcelRowByLabel(rows, /^queda$/i);
   const neteoRow = findExcelRowByLabel(rows, /^resta$/i);
-  const cardRows = findExcelRowsByLabel(
-    rows,
-    /amex|platinum|palacio|tarjeta/i,
-  );
 
   const incomeFrom = 1;
   let incomeTo = 3;
@@ -495,6 +508,18 @@ export function detectBalanceLayout(rows: Cell[][]): BalanceLayout {
   if (neteoRow !== null && balanceRow !== null && balanceRow > neteoRow + 1) {
     postFrom = neteoRow + 1;
     postTo = balanceRow - 1;
+  }
+
+  const scanTo = balanceRow !== null ? balanceRow - 1 : rows.length;
+  // Prefer category column B = "Tarjetas" (includes MP Santi, Galicia, etc.)
+  let cardRows = sheetLayout.hasCategory
+    ? findExcelRowsByCategory(rows, /^tarjetas?$/i, expenseFrom, scanTo)
+    : [];
+  if (cardRows.length === 0) {
+    cardRows = findExcelRowsByLabel(
+      rows,
+      /amex|platinum|palacio|tarjeta|mp\s|galicia/i,
+    );
   }
 
   return {
@@ -679,8 +704,8 @@ export function buildProyeccionView(
 
   const cardHint =
     bal.cardRows.length > 0
-      ? `Filas ${bal.cardRows.join(", ")} · ${periodLabel}`
-      : periodLabel;
+      ? `Categoría Tarjetas · filas ${bal.cardRows.join(", ")} · ${periodLabel}`
+      : `Sin filas con categoría Tarjetas · ${periodLabel}`;
 
   const kpis: Kpi[] = [
     {
