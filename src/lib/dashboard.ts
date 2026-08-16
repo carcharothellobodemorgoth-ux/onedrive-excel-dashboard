@@ -717,25 +717,6 @@ export function buildProyeccionView(
       value: formatMoney(gastos),
       hint: `Filas ${bal.expenseFrom}–${bal.expenseTo} (antes del neteo)`,
     },
-    {
-      id: "neteo",
-      label:
-        (bal.neteoRow !== null ? labelAt(rows, bal.neteoRow) : null) || "Neteo",
-      value: formatMoney(neteo),
-      hint:
-        bal.neteoRow !== null
-          ? `Fila ${bal.neteoRow} · fin del periodo (${quincenaLabel(lastCol)})`
-          : "No se encontró fila Resta",
-    },
-    {
-      id: "gastos-post",
-      label: "Gastos post-balance",
-      value: formatMoney(gastosPost),
-      hint:
-        bal.postFrom !== null && bal.postTo !== null
-          ? `Filas ${bal.postFrom}–${bal.postTo}`
-          : "Sin bloque post-neteo",
-    },
   ];
 
   const charts: ChartSeries[] = [];
