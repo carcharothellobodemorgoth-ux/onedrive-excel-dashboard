@@ -329,16 +329,10 @@ export function DashboardClient({
         </div>
         <div className="flex flex-wrap gap-2">
           <Link
-            href="/dashboard"
-            className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-zinc-950"
-          >
-            Proyección
-          </Link>
-          <Link
             href="/dashboard/gastos"
-            className="rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-white/5"
+            className="rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-emerald-400"
           >
-            Cargar gasto
+            + Cargar gasto
           </Link>
           <button
             type="button"
@@ -349,7 +343,7 @@ export function DashboardClient({
               }
               void loadSummary({ itemId: null, driveId: null });
             }}
-            className="rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-emerald-400"
+            className="rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-white/5"
           >
             Actualizar
           </button>
