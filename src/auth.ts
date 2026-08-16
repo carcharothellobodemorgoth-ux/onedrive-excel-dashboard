@@ -23,6 +23,8 @@ const scopes = [
   "User.Read",
   "Files.Read",
   "Files.Read.All",
+  "Files.ReadWrite",
+  "Files.ReadWrite.All",
 ].join(" ");
 
 const msaIssuer =

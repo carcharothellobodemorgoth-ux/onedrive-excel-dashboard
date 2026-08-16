@@ -51,7 +51,66 @@ async function graphFetch<T>(
     throw new Error(`Graph ${res.status}: ${body.slice(0, 500)}`);
   }
 
-  return res.json() as Promise<T>;
+  if (res.status === 204) {
+    return undefined as T;
+  }
+  const text = await res.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
+}
+
+export const GASTOS_VARIOS_SHEET = "Gastos Varios";
+/** A=descripción, B=categoría, C+=quincenas (misma convención que 20262027). */
+export const GASTOS_VARIOS_DATA_START = 2;
+export const GASTOS_VARIOS_QUINCENAS = 24;
+
+function colLetter(index0: number): string {
+  let n = index0 + 1;
+  let s = "";
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+async function withWorkbookSession<T>(
+  accessToken: string,
+  driveId: string,
+  itemId: string,
+  fn: (sessionHeaders: Record<string, string>) => Promise<T>,
+): Promise<T> {
+  const session = await graphFetch<{ id: string }>(
+    accessToken,
+    itemPath(driveId, itemId, "/workbook/createSession"),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ persistChanges: true }),
+    },
+  );
+  const sessionHeaders = { "workbook-session-id": session.id };
+  try {
+    return await fn(sessionHeaders);
+  } finally {
+    try {
+      await graphFetch(
+        accessToken,
+        itemPath(driveId, itemId, "/workbook/closeSession"),
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...sessionHeaders,
+          },
+          body: JSON.stringify({}),
+        },
+      );
+    } catch {
+      /* ignore close errors */
+    }
+  }
 }
 
 async function graphFetchOk<T>(
@@ -528,4 +587,191 @@ export async function loadWorkbookSummary(
     resolved.itemId,
   );
   return { ...resolved, worksheets };
+}
+
+export async function findWorksheetByName(
+  accessToken: string,
+  driveId: string,
+  itemId: string,
+  name: string,
+): Promise<Worksheet | null> {
+  const sheets = await listWorksheets(accessToken, driveId, itemId);
+  return (
+    sheets.find((w) => w.name.trim().toLowerCase() === name.trim().toLowerCase()) ??
+    null
+  );
+}
+
+async function writeRangeValues(
+  accessToken: string,
+  driveId: string,
+  itemId: string,
+  worksheetId: string,
+  address: string,
+  values: (string | number | boolean | null)[][],
+  sessionHeaders?: Record<string, string>,
+): Promise<void> {
+  await graphFetch(
+    accessToken,
+    itemPath(
+      driveId,
+      itemId,
+      `/workbook/worksheets/${encodeURIComponent(worksheetId)}/range(address='${address}')`,
+    ),
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...(sessionHeaders ?? {}),
+      },
+      body: JSON.stringify({ values }),
+    },
+  );
+}
+
+/**
+ * Ensures the "Gastos Varios" sheet exists (creates + header row if missing).
+ * Layout: A=Descripción, B=Categoría, C+=quincenas 1..24.
+ */
+export async function ensureGastosVariosSheet(
+  accessToken: string,
+  driveId: string,
+  itemId: string,
+): Promise<Worksheet> {
+  const existing = await findWorksheetByName(
+    accessToken,
+    driveId,
+    itemId,
+    GASTOS_VARIOS_SHEET,
+  );
+  if (existing) return existing;
+
+  return withWorkbookSession(accessToken, driveId, itemId, async (sessionHeaders) => {
+    const created = await graphFetch<Worksheet>(
+      accessToken,
+      itemPath(driveId, itemId, "/workbook/worksheets"),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...sessionHeaders,
+        },
+        body: JSON.stringify({ name: GASTOS_VARIOS_SHEET }),
+      },
+    );
+
+    const lastCol = colLetter(
+      GASTOS_VARIOS_DATA_START + GASTOS_VARIOS_QUINCENAS - 1,
+    );
+    const header: (string | number | null)[] = ["Descripción", "Categoría"];
+    for (let q = 1; q <= GASTOS_VARIOS_QUINCENAS; q++) {
+      header.push(`Q${q}`);
+    }
+    await writeRangeValues(
+      accessToken,
+      driveId,
+      itemId,
+      created.id,
+      `A1:${lastCol}1`,
+      [header],
+      sessionHeaders,
+    );
+    return created;
+  });
+}
+
+export type AppendGastoInput = {
+  description: string;
+  category: string;
+  amount: number;
+  /** Quincena 1-based (1..24) */
+  quincena: number;
+};
+
+/**
+ * Appends one expense row to "Gastos Varios" (creates the sheet if needed).
+ */
+export async function appendGastoVarios(
+  accessToken: string,
+  driveId: string,
+  itemId: string,
+  input: AppendGastoInput,
+): Promise<{ worksheet: Worksheet; row: number }> {
+  const worksheet = await ensureGastosVariosSheet(accessToken, driveId, itemId);
+  const q = Math.min(
+    Math.max(Math.floor(input.quincena), 1),
+    GASTOS_VARIOS_QUINCENAS,
+  );
+  const amountCol = GASTOS_VARIOS_DATA_START + q - 1;
+  const width = GASTOS_VARIOS_DATA_START + GASTOS_VARIOS_QUINCENAS;
+  const lastColLetter = colLetter(width - 1);
+
+  return withWorkbookSession(accessToken, driveId, itemId, async (sessionHeaders) => {
+    const range = await graphFetch<UsedRange>(
+      accessToken,
+      itemPath(
+        driveId,
+        itemId,
+        `/workbook/worksheets/${encodeURIComponent(worksheet.id)}/usedRange(valuesOnly=true)?$select=values`,
+      ),
+      { headers: sessionHeaders },
+    );
+    const used = range.values ?? [];
+    const nextRow = Math.max(used.length + 1, 2); // row 1 = header
+
+    const rowValues: (string | number | null)[] = Array.from(
+      { length: width },
+      () => null,
+    );
+    rowValues[0] = input.description.trim();
+    rowValues[1] = input.category.trim();
+    rowValues[amountCol] = Math.abs(input.amount);
+
+    await writeRangeValues(
+      accessToken,
+      driveId,
+      itemId,
+      worksheet.id,
+      `A${nextRow}:${lastColLetter}${nextRow}`,
+      [rowValues],
+      sessionHeaders,
+    );
+
+    return { worksheet, row: nextRow };
+  });
+}
+
+/**
+ * Sum absolute amounts per quincena from a Gastos Varios matrix (full usedRange).
+ * Skips header row when first cell looks like "Descripción".
+ */
+export function sumGastosVariosByQuincena(
+  rows: (string | number | boolean | null)[][],
+): Record<number, number> {
+  const out: Record<number, number> = {};
+  for (let q = 1; q <= GASTOS_VARIOS_QUINCENAS; q++) out[q] = 0;
+  if (!rows.length) return out;
+
+  let start = 0;
+  const first = String(rows[0]?.[0] ?? "")
+    .trim()
+    .toLowerCase();
+  if (first === "descripción" || first === "descripcion") start = 1;
+
+  for (let r = start; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row) continue;
+    for (let q = 1; q <= GASTOS_VARIOS_QUINCENAS; q++) {
+      const cell = row[GASTOS_VARIOS_DATA_START + q - 1];
+      let n = 0;
+      if (typeof cell === "number" && Number.isFinite(cell)) n = cell;
+      else if (typeof cell === "string" && cell.trim()) {
+        const cleaned = cell.replace(/\$/g, "").replace(/\s/g, "").replace(/\./g, "").replace(",", ".");
+        const parsed = Number(cleaned);
+        if (Number.isFinite(parsed)) n = parsed;
+      }
+      if (n !== 0) out[q] = (out[q] ?? 0) + Math.abs(n);
+    }
+  }
+  return out;
 }

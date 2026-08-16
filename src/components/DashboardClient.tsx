@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { AutoCharts } from "@/components/AutoCharts";
 import { KpiCards } from "@/components/KpiCards";
 import { PeriodSelector } from "@/components/PeriodSelector";
@@ -70,6 +71,9 @@ export function DashboardClient({
   );
   const [shareBusy, setShareBusy] = useState(false);
   const [period, setPeriod] = useState<PeriodSelection>(DEFAULT_PERIOD_SELECTION);
+  const [gastosVariosByQuincena, setGastosVariosByQuincena] = useState<
+    Record<number, number>
+  >({});
 
   useEffect(() => {
     setPeriod(loadPeriodSelection());
@@ -201,6 +205,28 @@ export function DashboardClient({
     }
   }, [shareUrl, applySummary]);
 
+  const loadGastosVarios = useCallback(
+    async (resolvedItemId: string, resolvedDriveId: string) => {
+      try {
+        const qs = new URLSearchParams({
+          itemId: resolvedItemId,
+          driveId: resolvedDriveId,
+        });
+        const res = await fetch(`/api/excel/gastos?${qs}`);
+        const raw = await res.text();
+        const data = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+        if (!res.ok) return;
+        const by = data.byQuincena;
+        if (by && typeof by === "object") {
+          setGastosVariosByQuincena(by as Record<number, number>);
+        }
+      } catch {
+        /* non-fatal: dashboard still works without varios */
+      }
+    },
+    [],
+  );
+
   const loadSheet = useCallback(
     async (
       worksheetId: string,
@@ -226,6 +252,7 @@ export function DashboardClient({
           );
         }
         setSheet(data as SheetPayload);
+        void loadGastosVarios(resolvedItemId, resolvedDriveId);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Error desconocido");
         setSheet(null);
@@ -233,7 +260,7 @@ export function DashboardClient({
         setSheetLoading(false);
       }
     },
-    [],
+    [loadGastosVarios],
   );
 
   useEffect(() => {
@@ -255,8 +282,13 @@ export function DashboardClient({
   }, [activeId, itemId, driveId, loadSheet]);
 
   const view = useMemo(
-    () => (sheet ? buildProyeccionView(sheet.rows, period) : null),
-    [sheet, period],
+    () =>
+      sheet
+        ? buildProyeccionView(sheet.rows, period, new Date(), {
+            gastosVariosByQuincena,
+          })
+        : null,
+    [sheet, period, gastosVariosByQuincena],
   );
 
   const periodMaxCol = sheet ? maxDataCol(sheet.rows) : 24;
@@ -296,6 +328,18 @@ export function DashboardClient({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Link
+            href="/dashboard"
+            className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-zinc-950"
+          >
+            Proyección
+          </Link>
+          <Link
+            href="/dashboard/gastos"
+            className="rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-white/5"
+          >
+            Cargar gasto
+          </Link>
           <button
             type="button"
             onClick={() => {

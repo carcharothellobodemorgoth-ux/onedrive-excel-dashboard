@@ -30,8 +30,13 @@ Configurable con `EXCEL_DRIVE_ITEM_ID`.
 4. API permissions → Add → Microsoft Graph (Delegated):
    - `User.Read`
    - `Files.Read`
+   - `Files.Read.All`
+   - `Files.ReadWrite`
+   - `Files.ReadWrite.All` (necesario para crear/escribir la hoja **Gastos Varios**)
    - `openid`, `profile`, `email`, `offline_access` (suelen ir implícitos en OIDC)
 5. Copiá **Application (client) ID**
+
+Tras agregar permisos de escritura: **cerrá sesión en la app y volvé a entrar** para consentir los nuevos scopes.
 
 ## 2. Variables de entorno
 

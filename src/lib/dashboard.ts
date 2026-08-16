@@ -440,13 +440,23 @@ export const DEFAULT_PERIOD_SELECTION: PeriodSelection = {
   col: "actual",
 };
 
+export function listExpenseCategories(rows: Cell[][]): string[] {
+  return discoverCategories(rows, 4, 41, SKIP_EXPENSE).sort((a, b) =>
+    a.localeCompare(b, "es"),
+  );
+}
+
 export function buildProyeccionView(
   rows: Cell[][],
   selection: PeriodSelection = DEFAULT_PERIOD_SELECTION,
   now: Date = new Date(),
+  extras?: { gastosVariosByQuincena?: Record<number, number> },
 ): ProyeccionView {
   const layout = detectSheetLayout(rows);
   const resolved = resolveSelectionCols(rows, selection, now);
+  const gv = extras?.gastosVariosByQuincena ?? {};
+  const gvSum = (cols: number[]) =>
+    cols.reduce((acc, q) => acc + (gv[q] ?? 0), 0);
 
   if (rows.length < 44) {
     return {
@@ -499,7 +509,9 @@ export function buildProyeccionView(
   const tarjetas = sumRowsCols(rows, layout, CARD_ROW_FROM, CARD_ROW_TO, cols, SKIP);
   const gastosPost = sumRowsCols(rows, layout, 37, 41, cols, SKIP);
   const neteo = valueAtQuincena(rows, layout, 35, lastCol);
-  const balanceFinal = valueAtQuincena(rows, layout, 44, lastCol);
+  const balanceSheet = valueAtQuincena(rows, layout, 44, lastCol);
+  const gastosVariosPeriodo = gvSum(cols);
+  const balanceFinal = balanceSheet - gastosVariosPeriodo;
 
   const incomeRows = listRowsCols(rows, layout, 1, 3, cols, SKIP);
   const expenseRows = [
@@ -554,10 +566,16 @@ export function buildProyeccionView(
       hint: "Filas 37–41",
     },
     {
+      id: "gastos-varios",
+      label: "Gastos varios",
+      value: formatMoney(gastosVariosPeriodo),
+      hint: `Hoja Gastos Varios · ${periodLabel}`,
+    },
+    {
       id: "final",
-      label: labelAt(rows, 44) || "Balance final",
+      label: labelAt(rows, 44) || "Lo que queda",
       value: formatMoney(balanceFinal),
-      hint: `Fila 44 · fin del periodo (${quincenaLabel(lastCol)})`,
+      hint: `Fila 44 − Gastos Varios · fin (${quincenaLabel(lastCol)})`,
     },
   ];
 
@@ -576,13 +594,14 @@ export function buildProyeccionView(
     );
     const gastoPeriodo = sumRowsCols(rows, layout, 4, 34, [q], SKIP_EXPENSE);
     const gastoPost = sumRowsCols(rows, layout, 37, 41, [q], SKIP);
-    const gastado = Math.abs(gastoPeriodo) + Math.abs(gastoPost);
+    const varios = gv[q] ?? 0;
+    const gastado = Math.abs(gastoPeriodo) + Math.abs(gastoPost) + varios;
     if (quedaRaw === null && gastado === 0) continue;
     const { halfLabel, monthLabel } = periodMeta(q);
     historyStacked.push({
       label: `${halfLabel} ${monthLabel}`,
       gastado,
-      queda: Math.max(0, quedaRaw ?? 0),
+      queda: Math.max(0, (quedaRaw ?? 0) - varios),
       col: q,
     });
   }
