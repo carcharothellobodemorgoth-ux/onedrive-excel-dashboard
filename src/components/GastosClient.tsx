@@ -139,8 +139,13 @@ export function GastosClient({ userName }: { userName?: string | null }) {
         for (let r = rows.length - 1; r >= 0; r--) {
           const row = rows[r];
           if (!isGastosVariosExpenseRow(row)) continue;
-          const desc = String(row?.[0] ?? "").trim();
-          const cat = String(row?.[1] ?? "").trim();
+          const desc =
+            String(row?.[0] ?? "").trim() ||
+            String(row?.[1] ?? "").trim() ||
+            "Sin descripción";
+          const cat = String(row?.[0] ?? "").trim()
+            ? String(row?.[1] ?? "").trim()
+            : "";
           for (let q = 1; q <= 24; q++) {
             const cell = row?.[2 + q - 1];
             const n =

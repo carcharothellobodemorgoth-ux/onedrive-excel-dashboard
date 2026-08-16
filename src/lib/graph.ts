@@ -864,29 +864,51 @@ export async function appendGastoVarios(
 }
 
 /**
- * True when column A looks like a real expense line (not headers / balance row).
- * User layout: rows 1–2 headers, row 3 "Lo que queda", row 4+ expenses.
+ * True when the row is a real expense line (not headers / balance row).
+ * Layout: A=descripción, B=categoría, C+=quincenas.
+ * Accepts free-form categories and rows typed only in B (A empty) if there is an amount.
  */
 export function isGastosVariosExpenseRow(
   row: (string | number | boolean | null)[] | undefined,
 ): boolean {
   if (!row) return false;
-  const label = String(row[0] ?? "")
-    .trim()
-    .toLowerCase();
-  if (!label) return false;
+  const labelA = String(row[0] ?? "").trim();
+  const labelB = String(row[1] ?? "").trim();
+  const a = labelA.toLowerCase();
+
   if (
-    /^(descripci[oó]n|categoria|categoría|lo que queda|resta|total|mes|agosto|septiembre|octubre|noviembre|diciembre|enero|febrero|marzo|abril|mayo|junio|julio|1era|2da|1ª|2ª|q\d+)$/i.test(
-      label,
+    a &&
+    /^(descripci[oó]n|categoria|categoría|lo que queda|queda|resta|total|mes|agosto|septiembre|octubre|noviembre|diciembre|enero|febrero|marzo|abril|mayo|junio|julio|1era|2da|1ª|2ª|q\d+)$/i.test(
+      a,
     )
   ) {
     return false;
   }
-  // Month-only header cells sometimes land in col A when merged oddly
-  if (/^(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\b/i.test(label)) {
+  if (a && /^(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\b/i.test(a)) {
     return false;
   }
-  return true;
+  // Balance mirror row variants: "queda", "lo que queda", etc.
+  if (a && /queda/i.test(a)) return false;
+
+  if (!labelA && !labelB) return false;
+
+  // Must have at least one amount in a quincena column
+  for (let q = 1; q <= GASTOS_VARIOS_QUINCENAS; q++) {
+    const cell = row[GASTOS_VARIOS_DATA_START + q - 1];
+    if (typeof cell === "number" && Number.isFinite(cell) && cell !== 0) {
+      return true;
+    }
+    if (typeof cell === "string" && cell.trim()) {
+      const cleaned = cell
+        .replace(/\$/g, "")
+        .replace(/\s/g, "")
+        .replace(/\./g, "")
+        .replace(",", ".");
+      const parsed = Number(cleaned);
+      if (Number.isFinite(parsed) && parsed !== 0) return true;
+    }
+  }
+  return false;
 }
 
 function cellToAbsNumber(cell: string | number | boolean | null | undefined): number {
