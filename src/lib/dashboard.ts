@@ -431,9 +431,84 @@ const SKIP_EXPENSE = [
   ...SKIP,
   /^resta$/i,
   /^lo que queda$/i,
+  /^queda$/i,
   /^transf/i,
   /^categoria$/i,
 ];
+
+type BalanceLayout = {
+  incomeFrom: number;
+  incomeTo: number;
+  expenseFrom: number;
+  expenseTo: number;
+  neteoRow: number | null;
+  postFrom: number | null;
+  postTo: number | null;
+  balanceRow: number | null;
+  cardRows: number[];
+};
+
+function findExcelRowsByLabel(rows: Cell[][], re: RegExp): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const label = String(rows[i]?.[0] ?? "").trim();
+    if (label && re.test(label)) out.push(i + 1);
+  }
+  return out;
+}
+
+function findExcelRowByLabel(rows: Cell[][], re: RegExp): number | null {
+  return findExcelRowsByLabel(rows, re)[0] ?? null;
+}
+
+/**
+ * Detect income / expenses / resta / lo que queda / cards by column A labels
+ * so the sheet can be compacted (e.g. all balance data in rows 1–37).
+ */
+export function detectBalanceLayout(rows: Cell[][]): BalanceLayout {
+  const balanceRow =
+    findExcelRowByLabel(rows, /^lo que queda$/i) ??
+    findExcelRowByLabel(rows, /^queda$/i);
+  const neteoRow = findExcelRowByLabel(rows, /^resta$/i);
+  const cardRows = findExcelRowsByLabel(
+    rows,
+    /amex|platinum|palacio|tarjeta/i,
+  );
+
+  const incomeFrom = 1;
+  let incomeTo = 3;
+  // If neteo is early, keep income as first rows before expenses
+  if (neteoRow !== null && neteoRow <= 4) {
+    incomeTo = Math.max(1, neteoRow - 1);
+  }
+
+  const expenseFrom = incomeTo + 1;
+  const expenseTo =
+    neteoRow !== null
+      ? Math.max(expenseFrom, neteoRow - 1)
+      : balanceRow !== null
+        ? Math.max(expenseFrom, balanceRow - 1)
+        : Math.max(expenseFrom, rows.length);
+
+  let postFrom: number | null = null;
+  let postTo: number | null = null;
+  if (neteoRow !== null && balanceRow !== null && balanceRow > neteoRow + 1) {
+    postFrom = neteoRow + 1;
+    postTo = balanceRow - 1;
+  }
+
+  return {
+    incomeFrom,
+    incomeTo,
+    expenseFrom,
+    expenseTo,
+    neteoRow,
+    postFrom,
+    postTo,
+    balanceRow,
+    cardRows,
+  };
+}
 
 export const DEFAULT_PERIOD_SELECTION: PeriodSelection = {
   mode: "quincena",
@@ -441,8 +516,12 @@ export const DEFAULT_PERIOD_SELECTION: PeriodSelection = {
 };
 
 export function listExpenseCategories(rows: Cell[][]): string[] {
-  return discoverCategories(rows, 4, 41, SKIP_EXPENSE).sort((a, b) =>
-    a.localeCompare(b, "es"),
+  const bal = detectBalanceLayout(rows);
+  const end = bal.balanceRow
+    ? bal.balanceRow - 1
+    : Math.max(bal.expenseTo, bal.postTo ?? bal.expenseTo);
+  return discoverCategories(rows, bal.expenseFrom, end, SKIP_EXPENSE).sort(
+    (a, b) => a.localeCompare(b, "es"),
   );
 }
 
@@ -453,19 +532,23 @@ export function buildProyeccionView(
   extras?: { gastosVariosByQuincena?: Record<number, number> },
 ): ProyeccionView {
   const layout = detectSheetLayout(rows);
+  const bal = detectBalanceLayout(rows);
   const resolved = resolveSelectionCols(rows, selection, now);
   const gv = extras?.gastosVariosByQuincena ?? {};
   const gvSum = (cols: number[]) =>
     cols.reduce((acc, q) => acc + (gv[q] ?? 0), 0);
 
-  if (rows.length < 44) {
+  if (rows.length < 3 || bal.balanceRow === null) {
     return {
       kpis: [
         {
           id: "err",
           label: "Estructura",
           value: "—",
-          hint: `Se esperaban ≥44 filas; hay ${rows.length}`,
+          hint:
+            bal.balanceRow === null
+              ? `No encontré la fila «Lo que queda» (hay ${rows.length} filas)`
+              : `Se esperaban datos de balance; hay ${rows.length} filas`,
         },
       ],
       charts: [],
@@ -500,23 +583,71 @@ export function buildProyeccionView(
   const lastCol = cols[cols.length - 1];
   const periodLabel = resolved.periodLabel;
 
-  // Tarjetas: AMEX GOLD / PLATINUM / PALACIO (filas 23–25 en la planilla)
-  const CARD_ROW_FROM = 23;
-  const CARD_ROW_TO = 25;
-
-  const ingresos = sumRowsCols(rows, layout, 1, 3, cols, SKIP);
-  const gastos = sumRowsCols(rows, layout, 4, 34, cols, SKIP_EXPENSE);
-  const tarjetas = sumRowsCols(rows, layout, CARD_ROW_FROM, CARD_ROW_TO, cols, SKIP);
-  const gastosPost = sumRowsCols(rows, layout, 37, 41, cols, SKIP);
-  const neteo = valueAtQuincena(rows, layout, 35, lastCol);
-  const balanceSheet = valueAtQuincena(rows, layout, 44, lastCol);
+  const ingresos = sumRowsCols(
+    rows,
+    layout,
+    bal.incomeFrom,
+    bal.incomeTo,
+    cols,
+    SKIP,
+  );
+  const gastos = sumRowsCols(
+    rows,
+    layout,
+    bal.expenseFrom,
+    bal.expenseTo,
+    cols,
+    SKIP_EXPENSE,
+  );
+  const tarjetas =
+    bal.cardRows.length > 0
+      ? bal.cardRows.reduce(
+          (acc, r) =>
+            acc +
+            cols.reduce(
+              (s, q) => s + valueAtQuincena(rows, layout, r, q),
+              0,
+            ),
+          0,
+        )
+      : 0;
+  const gastosPost =
+    bal.postFrom !== null && bal.postTo !== null && bal.postTo >= bal.postFrom
+      ? sumRowsCols(rows, layout, bal.postFrom, bal.postTo, cols, SKIP)
+      : 0;
+  const neteo =
+    bal.neteoRow !== null
+      ? valueAtQuincena(rows, layout, bal.neteoRow, lastCol)
+      : 0;
+  const balanceSheet = valueAtQuincena(
+    rows,
+    layout,
+    bal.balanceRow,
+    lastCol,
+  );
   const gastosVariosPeriodo = gvSum(cols);
   const balanceFinal = balanceSheet - gastosVariosPeriodo;
 
-  const incomeRows = listRowsCols(rows, layout, 1, 3, cols, SKIP);
+  const incomeRows = listRowsCols(
+    rows,
+    layout,
+    bal.incomeFrom,
+    bal.incomeTo,
+    cols,
+    SKIP,
+  );
   const expenseRows = [
-    ...listRowsCols(rows, layout, 4, 34, cols, SKIP_EXPENSE),
-    ...listRowsCols(rows, layout, 37, 41, cols, SKIP),
+    ...listRowsCols(
+      rows,
+      layout,
+      bal.expenseFrom,
+      bal.expenseTo,
+      cols,
+      SKIP_EXPENSE,
+    ),
+    ...(bal.postFrom !== null && bal.postTo !== null
+      ? listRowsCols(rows, layout, bal.postFrom, bal.postTo, cols, SKIP)
+      : []),
   ]
     .map((r) => ({ ...r, value: Math.abs(r.value) }))
     .sort((a, b) => b.value - a.value);
@@ -524,8 +655,24 @@ export function buildProyeccionView(
   const categoryChart = (() => {
     const catMap = new Map<string, number>();
     for (const part of [
-      ...listCategoryTotals(rows, layout, 4, 34, cols, SKIP_EXPENSE),
-      ...listCategoryTotals(rows, layout, 37, 41, cols, SKIP),
+      ...listCategoryTotals(
+        rows,
+        layout,
+        bal.expenseFrom,
+        bal.expenseTo,
+        cols,
+        SKIP_EXPENSE,
+      ),
+      ...(bal.postFrom !== null && bal.postTo !== null
+        ? listCategoryTotals(
+            rows,
+            layout,
+            bal.postFrom,
+            bal.postTo,
+            cols,
+            SKIP,
+          )
+        : []),
     ]) {
       catMap.set(part.label, (catMap.get(part.label) ?? 0) + part.value);
     }
@@ -534,12 +681,17 @@ export function buildProyeccionView(
       .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label, "es"));
   })();
 
+  const cardHint =
+    bal.cardRows.length > 0
+      ? `Filas ${bal.cardRows.join(", ")} · ${periodLabel}`
+      : periodLabel;
+
   const kpis: Kpi[] = [
     {
       id: "final",
-      label: labelAt(rows, 44) || "Lo que queda",
+      label: labelAt(rows, bal.balanceRow) || "Lo que queda",
       value: formatMoney(balanceFinal),
-      hint: `Fila 44 − Gastos Varios · fin (${quincenaLabel(lastCol)})`,
+      hint: `Fila ${bal.balanceRow} − Gastos Varios · fin (${quincenaLabel(lastCol)})`,
     },
     {
       id: "gastos-varios",
@@ -551,31 +703,38 @@ export function buildProyeccionView(
       id: "tarjetas",
       label: "Gasto en tarjeta",
       value: formatMoney(Math.abs(tarjetas)),
-      hint: `Filas ${CARD_ROW_FROM}–${CARD_ROW_TO} · ${periodLabel}`,
+      hint: cardHint,
     },
     {
       id: "ingresos",
       label: "Ingresos",
       value: formatMoney(ingresos),
-      hint: `Filas 1–3 · ${periodLabel}`,
+      hint: `Filas ${bal.incomeFrom}–${bal.incomeTo} · ${periodLabel}`,
     },
     {
       id: "gastos",
       label: "Gastos",
       value: formatMoney(gastos),
-      hint: "Bloque de gastos (antes del neteo)",
+      hint: `Filas ${bal.expenseFrom}–${bal.expenseTo} (antes del neteo)`,
     },
     {
       id: "neteo",
-      label: labelAt(rows, 35) || "Neteo",
+      label:
+        (bal.neteoRow !== null ? labelAt(rows, bal.neteoRow) : null) || "Neteo",
       value: formatMoney(neteo),
-      hint: `Fila 35 · fin del periodo (${quincenaLabel(lastCol)})`,
+      hint:
+        bal.neteoRow !== null
+          ? `Fila ${bal.neteoRow} · fin del periodo (${quincenaLabel(lastCol)})`
+          : "No se encontró fila Resta",
     },
     {
       id: "gastos-post",
       label: "Gastos post-balance",
       value: formatMoney(gastosPost),
-      hint: "Filas 37–41",
+      hint:
+        bal.postFrom !== null && bal.postTo !== null
+          ? `Filas ${bal.postFrom}–${bal.postTo}`
+          : "Sin bloque post-neteo",
     },
   ];
 
@@ -588,12 +747,23 @@ export function buildProyeccionView(
     queda: number;
     col: number;
   }[] = [];
+  const balanceIdx = bal.balanceRow - 1;
   for (let q = 1; q <= maxQ; q++) {
     const quedaRaw = toNumber(
-      rows[43]?.[sheetCol(layout, q)] ?? null,
+      rows[balanceIdx]?.[sheetCol(layout, q)] ?? null,
     );
-    const gastoPeriodo = sumRowsCols(rows, layout, 4, 34, [q], SKIP_EXPENSE);
-    const gastoPost = sumRowsCols(rows, layout, 37, 41, [q], SKIP);
+    const gastoPeriodo = sumRowsCols(
+      rows,
+      layout,
+      bal.expenseFrom,
+      bal.expenseTo,
+      [q],
+      SKIP_EXPENSE,
+    );
+    const gastoPost =
+      bal.postFrom !== null && bal.postTo !== null
+        ? sumRowsCols(rows, layout, bal.postFrom, bal.postTo, [q], SKIP)
+        : 0;
     const varios = gv[q] ?? 0;
     const gastado = Math.abs(gastoPeriodo) + Math.abs(gastoPost) + varios;
     if (quedaRaw === null && gastado === 0) continue;
@@ -617,7 +787,6 @@ export function buildProyeccionView(
   if (layout.hasCategory && categoryChart.length > 0) {
     charts.push({
       name: `Categorías · ${periodLabel}`,
-      // Barras: así se ven también categorías en $0 este periodo
       data: categoryChart,
     });
   }
