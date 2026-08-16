@@ -2,16 +2,31 @@ import { auth } from "@/auth";
 import { getWorksheetData, loadWorkbookSummary } from "@/lib/graph";
 import { NextRequest, NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+const NO_STORE = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+  Pragma: "no-cache",
+};
+
+function json(data: unknown, init?: { status?: number }) {
+  return NextResponse.json(data, {
+    status: init?.status,
+    headers: NO_STORE,
+  });
+}
+
 async function requireGraphToken() {
   const session = await auth();
   if (!session?.user) {
     return {
-      error: NextResponse.json({ error: "No autenticado" }, { status: 401 }),
+      error: json({ error: "No autenticado" }, { status: 401 }),
     };
   }
   if (session.error || !session.accessToken) {
     return {
-      error: NextResponse.json(
+      error: json(
         {
           error:
             "Sesión de Microsoft expirada. Cerrá sesión y volvé a entrar.",
@@ -43,9 +58,9 @@ export async function GET(request: NextRequest) {
         shareUrl,
       );
       if (!summary.ok) {
-        return NextResponse.json(summary, { status: 409 });
+        return json(summary, { status: 409 });
       }
-      return NextResponse.json(summary);
+      return json(summary);
     }
 
     let itemId = itemIdParam;
@@ -58,7 +73,7 @@ export async function GET(request: NextRequest) {
         shareUrl,
       );
       if (!summary.ok) {
-        return NextResponse.json(summary, { status: 409 });
+        return json(summary, { status: 409 });
       }
       itemId = summary.itemId;
       driveId = summary.driveId;
@@ -70,12 +85,12 @@ export async function GET(request: NextRequest) {
       itemId,
       worksheetId,
     );
-    return NextResponse.json(sheet);
+    return json(sheet);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Error Graph";
     const reauth =
       /InvalidAuthenticationToken|JWT is not well formed|401/i.test(message);
-    return NextResponse.json(
+    return json(
       {
         error: reauth
           ? "Sesión de Microsoft inválida. Cerrá sesión y volvé a entrar."
@@ -100,14 +115,14 @@ export async function POST(request: NextRequest) {
       body.shareUrl ?? null,
     );
     if (!summary.ok) {
-      return NextResponse.json(summary, { status: 409 });
+      return json(summary, { status: 409 });
     }
-    return NextResponse.json(summary);
+    return json(summary);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Error Graph";
     const reauth =
       /InvalidAuthenticationToken|JWT is not well formed|401/i.test(message);
-    return NextResponse.json(
+    return json(
       {
         error: reauth
           ? "Sesión de Microsoft inválida. Cerrá sesión y volvé a entrar."

@@ -6,6 +6,7 @@ import { AutoCharts } from "@/components/AutoCharts";
 import { KpiCards } from "@/components/KpiCards";
 import { PeriodSelector } from "@/components/PeriodSelector";
 import { SheetTable } from "@/components/SheetTable";
+import { apiFetch } from "@/lib/api-fetch";
 import {
   buildProyeccionView,
   DEFAULT_PERIOD_SELECTION,
@@ -121,7 +122,7 @@ export function DashboardClient({
           qs.set("itemId", storedItem);
           qs.set("driveId", storedDrive);
         }
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/excel${qs.toString() ? `?${qs}` : ""}`,
         );
         const raw = await res.text();
@@ -174,7 +175,7 @@ export function DashboardClient({
     setShareBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/excel", {
+      const res = await apiFetch("/api/excel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ shareUrl: shareUrl.trim() }),
@@ -212,7 +213,7 @@ export function DashboardClient({
           itemId: resolvedItemId,
           driveId: resolvedDriveId,
         });
-        const res = await fetch(`/api/excel/gastos?${qs}`);
+        const res = await apiFetch(`/api/excel/gastos?${qs}`);
         const raw = await res.text();
         const data = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
         if (!res.ok) return;
@@ -241,7 +242,7 @@ export function DashboardClient({
           itemId: resolvedItemId,
           driveId: resolvedDriveId,
         });
-        const res = await fetch(`/api/excel?${qs.toString()}`);
+        const res = await apiFetch(`/api/excel?${qs.toString()}`);
         const raw = await res.text();
         const data = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
         if (!res.ok) {
@@ -298,6 +299,27 @@ export function DashboardClient({
     return resolveSelectionCols(sheet.rows, period).cols;
   }, [sheet, period]);
 
+  const refreshDashboard = useCallback(async () => {
+    setError(null);
+    setSheet(null);
+    setGastosVariosByQuincena({});
+    const storedItem =
+      typeof window !== "undefined" ? localStorage.getItem(ITEM_KEY) : null;
+    const storedDrive =
+      typeof window !== "undefined" ? localStorage.getItem(DRIVE_KEY) : null;
+    await loadSummary({
+      itemId: storedItem,
+      driveId: storedDrive,
+    });
+    // Force sheet reload even if item/drive/active ids did not change
+    const ws = activeId;
+    const item = itemId ?? storedItem;
+    const drive = driveId ?? storedDrive;
+    if (ws && item && drive) {
+      await loadSheet(ws, item, drive);
+    }
+  }, [activeId, driveId, itemId, loadSheet, loadSummary]);
+
   const applyPeriod = useCallback((next: PeriodSelection) => {
     setPeriod(next);
     if (typeof window !== "undefined") {
@@ -336,13 +358,7 @@ export function DashboardClient({
           </Link>
           <button
             type="button"
-            onClick={() => {
-              if (typeof window !== "undefined") {
-                localStorage.removeItem(ITEM_KEY);
-                localStorage.removeItem(DRIVE_KEY);
-              }
-              void loadSummary({ itemId: null, driveId: null });
-            }}
+            onClick={() => void refreshDashboard()}
             className="rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-white/5"
           >
             Actualizar

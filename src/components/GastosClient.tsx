@@ -8,6 +8,7 @@ import {
   listQuincenaOptions,
   quincenaLabel,
 } from "@/lib/dashboard";
+import { apiFetch } from "@/lib/api-fetch";
 import { isGastosVariosExpenseRow } from "@/lib/graph";
 
 type Worksheet = { id: string; name: string; position: number };
@@ -58,7 +59,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
         qs.set("itemId", storedItem);
         qs.set("driveId", storedDrive);
       }
-      const res = await fetch(`/api/excel${qs.toString() ? `?${qs}` : ""}`);
+      const res = await apiFetch(`/api/excel${qs.toString() ? `?${qs}` : ""}`);
       const raw = await res.text();
       const data = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
       if (!res.ok) {
@@ -87,7 +88,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
       const main =
         worksheets.find((w) => /20262027/i.test(w.name)) ?? worksheets[0];
       if (main) {
-        const sheetRes = await fetch(
+        const sheetRes = await apiFetch(
           `/api/excel?${new URLSearchParams({
             worksheetId: main.id,
             itemId: id,
@@ -108,7 +109,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
         }
       }
 
-      const gvRes = await fetch(
+      const gvRes = await apiFetch(
         `/api/excel/gastos?${new URLSearchParams({ itemId: id, driveId: dId })}`,
       );
       const gvRaw = await gvRes.text();
@@ -170,7 +171,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
     setError(null);
     setOkMsg(null);
     try {
-      const res = await fetch("/api/excel/gastos", {
+      const res = await apiFetch("/api/excel/gastos", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

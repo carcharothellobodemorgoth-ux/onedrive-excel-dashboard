@@ -8,16 +8,31 @@ import {
 } from "@/lib/graph";
 import { NextRequest, NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+const NO_STORE = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+  Pragma: "no-cache",
+};
+
+function json(data: unknown, init?: { status?: number }) {
+  return NextResponse.json(data, {
+    status: init?.status,
+    headers: NO_STORE,
+  });
+}
+
 async function requireGraphToken() {
   const session = await auth();
   if (!session?.user) {
     return {
-      error: NextResponse.json({ error: "No autenticado" }, { status: 401 }),
+      error: json({ error: "No autenticado" }, { status: 401 }),
     };
   }
   if (session.error || !session.accessToken) {
     return {
-      error: NextResponse.json(
+      error: json(
         {
           error:
             "Sesión de Microsoft expirada. Cerrá sesión y volvé a entrar.",
@@ -39,7 +54,7 @@ function graphErrorResponse(err: unknown) {
     );
   const needWrite =
     /Access Denied|Forbidden|403|insufficient|Files\.ReadWrite/i.test(message);
-  return NextResponse.json(
+  return json(
     {
       error: reauth
         ? needWrite
@@ -66,7 +81,7 @@ export async function GET(request: NextRequest) {
     if (!resolvedItemId || !resolvedDriveId) {
       const summary = await loadWorkbookSummary(gate.accessToken, null, null);
       if (!summary.ok) {
-        return NextResponse.json(summary, { status: 409 });
+        return json(summary, { status: 409 });
       }
       resolvedItemId = summary.itemId;
       resolvedDriveId = summary.driveId;
@@ -80,7 +95,7 @@ export async function GET(request: NextRequest) {
     );
 
     if (!existing) {
-      return NextResponse.json({
+      return json({
         ok: true,
         worksheet: null,
         byQuincena: Object.fromEntries(
@@ -100,7 +115,7 @@ export async function GET(request: NextRequest) {
     );
     const byQuincena = sumGastosVariosByQuincena(sheet.rows);
 
-    return NextResponse.json({
+    return json({
       ok: true,
       worksheet: existing,
       byQuincena,
@@ -140,25 +155,25 @@ export async function POST(request: NextRequest) {
         : Number(body.quincena);
 
     if (!description) {
-      return NextResponse.json(
+      return json(
         { error: "La descripción es obligatoria" },
         { status: 400 },
       );
     }
     if (!category) {
-      return NextResponse.json(
+      return json(
         { error: "La categoría es obligatoria" },
         { status: 400 },
       );
     }
     if (!Number.isFinite(amount) || amount === 0) {
-      return NextResponse.json(
+      return json(
         { error: "El monto debe ser un número distinto de 0" },
         { status: 400 },
       );
     }
     if (!Number.isFinite(quincena) || quincena < 1 || quincena > 24) {
-      return NextResponse.json(
+      return json(
         { error: "Quincena inválida (1–24)" },
         { status: 400 },
       );
@@ -169,7 +184,7 @@ export async function POST(request: NextRequest) {
     if (!itemId || !driveId) {
       const summary = await loadWorkbookSummary(gate.accessToken, null, null);
       if (!summary.ok) {
-        return NextResponse.json(summary, { status: 409 });
+        return json(summary, { status: 409 });
       }
       itemId = summary.itemId;
       driveId = summary.driveId;
@@ -187,7 +202,7 @@ export async function POST(request: NextRequest) {
       },
     );
 
-    return NextResponse.json({
+    return json({
       ok: true,
       worksheet: result.worksheet,
       row: result.row,
