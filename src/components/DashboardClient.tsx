@@ -483,31 +483,6 @@ export function DashboardClient({
       ) : (
         item && (
           <>
-            <nav className="flex flex-wrap gap-2">
-              {worksheets
-                .filter((ws) => !/gastos\s*varios/i.test(ws.name))
-                .map((ws) => (
-                <button
-                  key={ws.id}
-                  type="button"
-                  onClick={() => setActiveId(ws.id)}
-                  className={`rounded-full px-4 py-2 text-sm font-medium transition ${
-                    activeId === ws.id
-                      ? "bg-white text-zinc-950"
-                      : "bg-white/5 text-zinc-300 hover:bg-white/10"
-                  }`}
-                >
-                  {ws.name}
-                </button>
-              ))}
-              <Link
-                href="/dashboard/gastos"
-                className="rounded-full bg-white/5 px-4 py-2 text-sm font-medium text-emerald-300 hover:bg-emerald-500/15"
-              >
-                Gastos Varios → cargar
-              </Link>
-            </nav>
-
             {sheetLoading && (
               <p className="text-sm text-zinc-400">Cargando hoja…</p>
             )}
