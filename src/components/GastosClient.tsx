@@ -39,11 +39,23 @@ export function GastosClient({ userName }: { userName?: string | null }) {
   const [category, setCategory] = useState("");
   const [amount, setAmount] = useState("");
   const [quincena, setQuincena] = useState<number>(1);
+  /** Filter for the expense list: "all" or quincena 1–24 */
+  const [listQuincena, setListQuincena] = useState<number | "all">("all");
   const [recent, setRecent] = useState<
     { description: string; category: string; amount: number; quincena: number }[]
   >([]);
 
   const quincenaOptions = useMemo(() => listQuincenaOptions(24), []);
+
+  const filteredRecent = useMemo(() => {
+    if (listQuincena === "all") return recent;
+    return recent.filter((r) => r.quincena === listQuincena);
+  }, [recent, listQuincena]);
+
+  const filteredTotal = useMemo(
+    () => filteredRecent.reduce((acc, r) => acc + r.amount, 0),
+    [filteredRecent],
+  );
 
   const loadContext = useCallback(async () => {
     setLoading(true);
@@ -105,7 +117,9 @@ export function GastosClient({ userName }: { userName?: string | null }) {
           const cats = listExpenseCategories(sheetData.rows);
           setCategories(cats);
           setCategory((prev) => prev || cats[0] || "");
-          setQuincena(detectCurrentQuincenaCol(sheetData.rows));
+          const currentQ = detectCurrentQuincenaCol(sheetData.rows);
+          setQuincena(currentQ);
+          setListQuincena((prev) => (prev === "all" ? currentQ : prev));
         }
       }
 
@@ -122,34 +136,33 @@ export function GastosClient({ userName }: { userName?: string | null }) {
           amount: number;
           quincena: number;
         }[] = [];
-        for (let r = rows.length - 1; r >= 0 && parsed.length < 12; r--) {
+        for (let r = rows.length - 1; r >= 0; r--) {
           const row = rows[r];
           if (!isGastosVariosExpenseRow(row)) continue;
           const desc = String(row?.[0] ?? "").trim();
           const cat = String(row?.[1] ?? "").trim();
-          let foundQ = 0;
-          let foundAmt = 0;
           for (let q = 1; q <= 24; q++) {
             const cell = row?.[2 + q - 1];
             const n =
               typeof cell === "number"
                 ? cell
                 : typeof cell === "string"
-                  ? Number(cell.replace(",", "."))
+                  ? Number(
+                      cell
+                        .replace(/\$/g, "")
+                        .replace(/\s/g, "")
+                        .replace(/\./g, "")
+                        .replace(",", "."),
+                    )
                   : 0;
             if (Number.isFinite(n) && n !== 0) {
-              foundQ = q;
-              foundAmt = Math.abs(n);
-              break;
+              parsed.push({
+                description: desc,
+                category: cat,
+                amount: Math.abs(n),
+                quincena: q,
+              });
             }
-          }
-          if (foundQ) {
-            parsed.push({
-              description: desc,
-              category: cat,
-              amount: foundAmt,
-              quincena: foundQ,
-            });
           }
         }
         setRecent(parsed);
@@ -383,27 +396,61 @@ export function GastosClient({ userName }: { userName?: string | null }) {
 
       {recent.length > 0 && (
         <section>
-          <h2 className="mb-3 text-lg font-semibold text-white">
-            Últimos gastos
-          </h2>
-          <ul className="divide-y divide-white/10 rounded-2xl border border-white/10 bg-white/5">
-            {recent.map((r, i) => (
-              <li
-                key={`${r.description}-${i}`}
-                className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <h2 className="text-lg font-semibold text-white">Gastos cargados</h2>
+            <div className="sm:w-72">
+              <label className={labelClass} htmlFor="list-q">
+                Filtrar por quincena
+              </label>
+              <select
+                id="list-q"
+                className={inputClass}
+                value={listQuincena === "all" ? "all" : String(listQuincena)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setListQuincena(v === "all" ? "all" : Number(v));
+                }}
               >
-                <div>
-                  <p className="font-medium text-white">{r.description}</p>
-                  <p className="text-xs text-zinc-400">
-                    {r.category || "Sin categoría"} · {quincenaLabel(r.quincena)}
+                <option value="all">Todas las quincenas</option>
+                {quincenaOptions.map((q) => (
+                  <option key={q.value} value={q.value}>
+                    {q.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <p className="mb-2 text-sm text-zinc-400">
+            {filteredRecent.length} gasto
+            {filteredRecent.length === 1 ? "" : "s"}
+            {" · "}
+            Total:{" "}
+            <strong className="text-emerald-300">{money(filteredTotal)}</strong>
+          </p>
+          {filteredRecent.length === 0 ? (
+            <p className="rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-sm text-zinc-400">
+              No hay gastos en esta quincena.
+            </p>
+          ) : (
+            <ul className="divide-y divide-white/10 rounded-2xl border border-white/10 bg-white/5">
+              {filteredRecent.map((r, i) => (
+                <li
+                  key={`${r.description}-${r.quincena}-${r.amount}-${i}`}
+                  className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div>
+                    <p className="font-medium text-white">{r.description}</p>
+                    <p className="text-xs text-zinc-400">
+                      {r.category || "Sin categoría"} · {quincenaLabel(r.quincena)}
+                    </p>
+                  </div>
+                  <p className="text-sm font-semibold text-emerald-300">
+                    {money(r.amount)}
                   </p>
-                </div>
-                <p className="text-sm font-semibold text-emerald-300">
-                  {money(r.amount)}
-                </p>
-              </li>
-            ))}
-          </ul>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       )}
     </div>
