@@ -249,19 +249,19 @@ export function GastosClient({ userName }: { userName?: string | null }) {
               : "Se escribe en la hoja Gastos Varios del workbook"}
           </p>
         </div>
-        <nav className="flex flex-wrap gap-2">
+        <nav className="flex shrink-0 flex-nowrap items-center gap-1.5 sm:gap-2">
           <Link
             href="/dashboard"
-            className="rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-white/5"
+            className="whitespace-nowrap rounded-full border border-white/15 px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/5 sm:px-4 sm:py-2 sm:text-sm"
           >
             Proyección
           </Link>
-          <span className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-zinc-950">
+          <span className="whitespace-nowrap rounded-full bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-950 sm:px-4 sm:py-2 sm:text-sm">
             Cargar gasto
           </span>
           <a
             href="/api/auth/signout"
-            className="rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-white/5"
+            className="whitespace-nowrap rounded-full border border-white/15 px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/5 sm:px-4 sm:py-2 sm:text-sm"
           >
             Cerrar sesión
           </a>
