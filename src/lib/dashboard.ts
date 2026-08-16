@@ -536,6 +536,18 @@ export function buildProyeccionView(
 
   const kpis: Kpi[] = [
     {
+      id: "final",
+      label: labelAt(rows, 44) || "Lo que queda",
+      value: formatMoney(balanceFinal),
+      hint: `Fila 44 − Gastos Varios · fin (${quincenaLabel(lastCol)})`,
+    },
+    {
+      id: "gastos-varios",
+      label: "Gastos varios",
+      value: formatMoney(gastosVariosPeriodo),
+      hint: `Hoja Gastos Varios · ${periodLabel}`,
+    },
+    {
       id: "tarjetas",
       label: "Gasto en tarjeta",
       value: formatMoney(Math.abs(tarjetas)),
@@ -564,18 +576,6 @@ export function buildProyeccionView(
       label: "Gastos post-balance",
       value: formatMoney(gastosPost),
       hint: "Filas 37–41",
-    },
-    {
-      id: "gastos-varios",
-      label: "Gastos varios",
-      value: formatMoney(gastosVariosPeriodo),
-      hint: `Hoja Gastos Varios · ${periodLabel}`,
-    },
-    {
-      id: "final",
-      label: labelAt(rows, 44) || "Lo que queda",
-      value: formatMoney(balanceFinal),
-      hint: `Fila 44 − Gastos Varios · fin (${quincenaLabel(lastCol)})`,
     },
   ];
 
