@@ -41,6 +41,8 @@ async function graphFetch<T>(
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",
+      "Cache-Control": "no-cache, no-store",
+      Pragma: "no-cache",
       ...(init?.headers ?? {}),
     },
     cache: "no-store",
@@ -57,6 +59,100 @@ async function graphFetch<T>(
   const text = await res.text();
   if (!text) return undefined as T;
   return JSON.parse(text) as T;
+}
+
+/**
+ * createSession often returns 202 + Location (long-running). Poll until we get a session id.
+ * A fresh session forces Excel Online to load the latest OneDrive file (avoids stale usedRange).
+ */
+async function createWorkbookSession(
+  accessToken: string,
+  driveId: string,
+  itemId: string,
+  persistChanges: boolean,
+): Promise<string> {
+  const res = await fetch(
+    `${GRAPH}${itemPath(driveId, itemId, "/workbook/createSession")}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Prefer: "respond-async",
+        "Cache-Control": "no-cache, no-store",
+      },
+      body: JSON.stringify({ persistChanges }),
+      cache: "no-store",
+    },
+  );
+
+  if (res.status === 201 || res.status === 200) {
+    const body = (await res.json()) as { id?: string };
+    if (!body.id) throw new Error("Graph createSession: missing id");
+    return body.id;
+  }
+
+  if (res.status === 202) {
+    const location = res.headers.get("Location") ?? res.headers.get("location");
+    if (!location) {
+      throw new Error("Graph createSession 202 without Location");
+    }
+    const statusUrl = location.startsWith("http")
+      ? location
+      : `${GRAPH}${location.startsWith("/") ? "" : "/"}${location}`;
+
+    const deadline = Date.now() + 45_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 800));
+      const opRes = await fetch(statusUrl, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/json",
+          "Cache-Control": "no-cache, no-store",
+        },
+        cache: "no-store",
+      });
+      if (!opRes.ok) {
+        const t = await opRes.text();
+        throw new Error(`Graph session status ${opRes.status}: ${t.slice(0, 300)}`);
+      }
+      const op = (await opRes.json()) as {
+        status?: string;
+        resourceLocation?: string;
+        id?: string;
+        error?: { message?: string };
+      };
+      if (op.status === "failed") {
+        throw new Error(
+          `Graph createSession failed: ${op.error?.message ?? "unknown"}`,
+        );
+      }
+      if (op.status === "succeeded") {
+        if (op.id && !op.resourceLocation) return op.id;
+        if (op.resourceLocation) {
+          const resultUrl = op.resourceLocation.startsWith("http")
+            ? op.resourceLocation
+            : `${GRAPH}${op.resourceLocation.startsWith("/") ? "" : "/"}${op.resourceLocation}`;
+          const resultRes = await fetch(resultUrl, {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              Accept: "application/json",
+            },
+            cache: "no-store",
+          });
+          const result = (await resultRes.json()) as { id?: string };
+          if (result.id) return result.id;
+        }
+        // Some tenants put session id directly on the operation
+        if (typeof op.id === "string" && op.id.length > 8) return op.id;
+      }
+    }
+    throw new Error("Graph createSession timed out");
+  }
+
+  const body = await res.text();
+  throw new Error(`Graph createSession ${res.status}: ${body.slice(0, 400)}`);
 }
 
 export const GASTOS_VARIOS_SHEET = "Gastos Varios";
@@ -80,17 +176,15 @@ async function withWorkbookSession<T>(
   driveId: string,
   itemId: string,
   fn: (sessionHeaders: Record<string, string>) => Promise<T>,
+  persistChanges = true,
 ): Promise<T> {
-  const session = await graphFetch<{ id: string }>(
+  const sessionId = await createWorkbookSession(
     accessToken,
-    itemPath(driveId, itemId, "/workbook/createSession"),
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ persistChanges: true }),
-    },
+    driveId,
+    itemId,
+    persistChanges,
   );
-  const sessionHeaders = { "workbook-session-id": session.id };
+  const sessionHeaders = { "workbook-session-id": sessionId };
   try {
     return await fn(sessionHeaders);
   } finally {
@@ -515,40 +609,68 @@ export async function getWorksheetData(
   itemId: string,
   worksheetId: string,
 ): Promise<SheetData> {
-  const worksheet = await graphFetch<Worksheet>(
+  // Fresh workbook session → Excel backend reloads from OneDrive (not a cached copy).
+  return withWorkbookSession(
     accessToken,
-    itemPath(
-      driveId,
-      itemId,
-      `/workbook/worksheets/${encodeURIComponent(worksheetId)}?$select=id,name,position`,
-    ),
-  );
+    driveId,
+    itemId,
+    async (sessionHeaders) => {
+      const worksheet = await graphFetch<Worksheet>(
+        accessToken,
+        itemPath(
+          driveId,
+          itemId,
+          `/workbook/worksheets/${encodeURIComponent(worksheetId)}?$select=id,name,position`,
+        ),
+        { headers: sessionHeaders },
+      );
 
-  const range = await graphFetch<UsedRange>(
-    accessToken,
-    itemPath(
-      driveId,
-      itemId,
-      `/workbook/worksheets/${encodeURIComponent(worksheetId)}/usedRange(valuesOnly=true)?$select=values`,
-    ),
-  );
+      // Recalc so formula cells (Lo que queda, etc.) match latest inputs.
+      try {
+        await graphFetch(
+          accessToken,
+          itemPath(driveId, itemId, "/workbook/application/calculate"),
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...sessionHeaders,
+            },
+            body: JSON.stringify({ calculationType: "Full" }),
+          },
+        );
+      } catch {
+        /* calculate is best-effort */
+      }
 
-  const values = range.values ?? [];
-  if (values.length === 0) {
-    return { worksheet, headers: [], rows: [] };
-  }
+      const range = await graphFetch<UsedRange>(
+        accessToken,
+        itemPath(
+          driveId,
+          itemId,
+          `/workbook/worksheets/${encodeURIComponent(worksheetId)}/usedRange(valuesOnly=true)?$select=values`,
+        ),
+        { headers: sessionHeaders },
+      );
 
-  // Full matrix: Excel row 1 = rows[0]. Column A = labels; other cols = quincenas.
-  // Do NOT treat the first row as headers (rows 1–3 are ingresos).
-  const width = Math.max(...values.map((r) => r.length), 1);
-  const headers = Array.from({ length: width }, (_, i) =>
-    i === 0 ? "Imputación" : `Q${i}`,
-  );
-  const rows = values.map((row) =>
-    headers.map((_, i) => cellValue(row[i])),
-  );
+      const values = range.values ?? [];
+      if (values.length === 0) {
+        return { worksheet, headers: [], rows: [] };
+      }
 
-  return { worksheet, headers, rows };
+      const width = Math.max(...values.map((r) => r.length), 1);
+      const headers = Array.from({ length: width }, (_, i) =>
+        i === 0 ? "Imputación" : `Q${i}`,
+      );
+      const rows = values.map((row) =>
+        headers.map((_, i) => cellValue(row[i])),
+      );
+
+      return { worksheet, headers, rows };
+    },
+    // Read-only session: still loads latest file; does not write back.
+    false,
+  );
 }
 
 export async function loadWorkbookSummary(

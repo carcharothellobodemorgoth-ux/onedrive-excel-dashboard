@@ -299,24 +299,29 @@ export function DashboardClient({
     return resolveSelectionCols(sheet.rows, period).cols;
   }, [sheet, period]);
 
+  const [refreshing, setRefreshing] = useState(false);
+
   const refreshDashboard = useCallback(async () => {
     setError(null);
+    setRefreshing(true);
     setSheet(null);
     setGastosVariosByQuincena({});
-    const storedItem =
-      typeof window !== "undefined" ? localStorage.getItem(ITEM_KEY) : null;
-    const storedDrive =
-      typeof window !== "undefined" ? localStorage.getItem(DRIVE_KEY) : null;
-    await loadSummary({
-      itemId: storedItem,
-      driveId: storedDrive,
-    });
-    // Force sheet reload even if item/drive/active ids did not change
-    const ws = activeId;
-    const item = itemId ?? storedItem;
-    const drive = driveId ?? storedDrive;
-    if (ws && item && drive) {
-      await loadSheet(ws, item, drive);
+    try {
+      // Prefer direct sheet reload (fresh Graph session). Avoid clearing workbook ids.
+      if (activeId && itemId && driveId) {
+        await loadSheet(activeId, itemId, driveId);
+        return;
+      }
+      const storedItem =
+        typeof window !== "undefined" ? localStorage.getItem(ITEM_KEY) : null;
+      const storedDrive =
+        typeof window !== "undefined" ? localStorage.getItem(DRIVE_KEY) : null;
+      await loadSummary({
+        itemId: storedItem,
+        driveId: storedDrive,
+      });
+    } finally {
+      setRefreshing(false);
     }
   }, [activeId, driveId, itemId, loadSheet, loadSummary]);
 
@@ -358,10 +363,11 @@ export function DashboardClient({
           </Link>
           <button
             type="button"
+            disabled={refreshing || sheetLoading}
             onClick={() => void refreshDashboard()}
-            className="rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-white/5"
+            className="rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-white/5 disabled:opacity-50"
           >
-            Actualizar
+            {refreshing || sheetLoading ? "Actualizando…" : "Actualizar"}
           </button>
           <a
             href="/api/auth/signout"
