@@ -539,20 +539,12 @@ export function DashboardClient({
               !sheetLoading &&
               view &&
               !/gastos\s*varios/i.test(sheet.worksheet.name) && (
-              <div className="flex flex-col gap-6">
+              <div className="flex flex-col gap-4">
                 <PeriodSelector
                   value={period}
                   maxCol={periodMaxCol}
                   onChange={applyPeriod}
                 />
-                <p className="text-sm text-emerald-300/90">
-                  Hoy: <strong className="text-white">{view.todayLabel}</strong>
-                  {" · "}
-                  Periodo:{" "}
-                  <strong className="text-white">{view.periodLabel}</strong>
-                  {" · "}
-                  hoja {sheet.worksheet.name}
-                </p>
                 {!view.inCycle && (
                   <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
                     La fecha de hoy no cae en el ciclo de la planilla
