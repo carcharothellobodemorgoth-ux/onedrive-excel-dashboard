@@ -1,10 +1,12 @@
 import { auth } from "@/auth";
 import {
   appendGastoVarios,
+  deleteGastoVarios,
   findWorksheetByName,
   getWorksheetData,
   loadWorkbookSummary,
   sumGastosVariosByQuincena,
+  updateGastoVarios,
 } from "@/lib/graph";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -208,6 +210,178 @@ export async function POST(request: NextRequest) {
       row: result.row,
       itemId,
       driveId,
+    });
+  } catch (err) {
+    return graphErrorResponse(err);
+  }
+}
+
+type GastoBody = {
+  description?: string;
+  category?: string;
+  amount?: number | string;
+  quincena?: number | string;
+  previousQuincena?: number | string;
+  row?: number | string;
+  itemId?: string;
+  driveId?: string;
+};
+
+function parseGastoFields(body: GastoBody) {
+  const description = String(body.description ?? "").trim();
+  const category = String(body.category ?? "").trim();
+  const amount =
+    typeof body.amount === "number"
+      ? body.amount
+      : Number(String(body.amount ?? "").replace(",", "."));
+  const quincena =
+    typeof body.quincena === "number"
+      ? body.quincena
+      : Number(body.quincena);
+  return { description, category, amount, quincena };
+}
+
+function gastoFieldError(fields: ReturnType<typeof parseGastoFields>) {
+  if (!fields.description) {
+    return json({ error: "La descripción es obligatoria" }, { status: 400 });
+  }
+  if (!fields.category) {
+    return json({ error: "La categoría es obligatoria" }, { status: 400 });
+  }
+  if (!Number.isFinite(fields.amount) || fields.amount === 0) {
+    return json(
+      { error: "El monto debe ser un número distinto de 0" },
+      { status: 400 },
+    );
+  }
+  if (
+    !Number.isFinite(fields.quincena) ||
+    fields.quincena < 1 ||
+    fields.quincena > 24
+  ) {
+    return json({ error: "Quincena inválida (1–24)" }, { status: 400 });
+  }
+  return null;
+}
+
+async function resolveWorkbookIds(
+  accessToken: string,
+  itemId: string | null | undefined,
+  driveId: string | null | undefined,
+) {
+  if (itemId && driveId) {
+    return { itemId, driveId };
+  }
+  const summary = await loadWorkbookSummary(accessToken, null, null);
+  if (!summary.ok) {
+    return { error: json(summary, { status: 409 }) };
+  }
+  return { itemId: summary.itemId, driveId: summary.driveId };
+}
+
+/** PATCH: update one gasto { row, description, category, amount, quincena }. */
+export async function PATCH(request: NextRequest) {
+  const gate = await requireGraphToken();
+  if ("error" in gate) return gate.error;
+
+  try {
+    const body = (await request.json()) as GastoBody;
+    const fields = parseGastoFields(body);
+    const invalid = gastoFieldError(fields);
+    if (invalid) return invalid;
+
+    const row =
+      typeof body.row === "number" ? body.row : Number(body.row);
+    if (!Number.isFinite(row) || row < 2) {
+      return json({ error: "Fila inválida" }, { status: 400 });
+    }
+    const previousQuincena =
+      body.previousQuincena === undefined || body.previousQuincena === ""
+        ? fields.quincena
+        : typeof body.previousQuincena === "number"
+          ? body.previousQuincena
+          : Number(body.previousQuincena);
+
+    const ids = await resolveWorkbookIds(
+      gate.accessToken,
+      body.itemId,
+      body.driveId,
+    );
+    if ("error" in ids) return ids.error;
+
+    const result = await updateGastoVarios(
+      gate.accessToken,
+      ids.driveId,
+      ids.itemId,
+      {
+        row,
+        description: fields.description,
+        category: fields.category,
+        amount: Math.abs(fields.amount),
+        quincena: fields.quincena,
+        previousQuincena: Number.isFinite(previousQuincena)
+          ? previousQuincena
+          : fields.quincena,
+      },
+    );
+
+    return json({
+      ok: true,
+      worksheet: result.worksheet,
+      row: result.row,
+      itemId: ids.itemId,
+      driveId: ids.driveId,
+    });
+  } catch (err) {
+    return graphErrorResponse(err);
+  }
+}
+
+/** DELETE: remove one gasto (?row=&quincena=). */
+export async function DELETE(request: NextRequest) {
+  const gate = await requireGraphToken();
+  if ("error" in gate) return gate.error;
+
+  try {
+    const sp = request.nextUrl.searchParams;
+    const row = Number(sp.get("row"));
+    const quincenaRaw = sp.get("quincena");
+    const quincena =
+      quincenaRaw === null || quincenaRaw === ""
+        ? undefined
+        : Number(quincenaRaw);
+
+    if (!Number.isFinite(row) || row < 2) {
+      return json({ error: "Fila inválida" }, { status: 400 });
+    }
+    if (
+      quincena !== undefined &&
+      (!Number.isFinite(quincena) || quincena < 1 || quincena > 24)
+    ) {
+      return json({ error: "Quincena inválida (1–24)" }, { status: 400 });
+    }
+
+    const ids = await resolveWorkbookIds(
+      gate.accessToken,
+      sp.get("itemId"),
+      sp.get("driveId"),
+    );
+    if ("error" in ids) return ids.error;
+
+    const result = await deleteGastoVarios(
+      gate.accessToken,
+      ids.driveId,
+      ids.itemId,
+      row,
+      quincena,
+    );
+
+    return json({
+      ok: true,
+      deleted: result.deleted,
+      worksheet: result.worksheet,
+      itemId: ids.itemId,
+      driveId: ids.driveId,
     });
   } catch (err) {
     return graphErrorResponse(err);

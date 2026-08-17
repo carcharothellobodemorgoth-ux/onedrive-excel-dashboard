@@ -863,6 +863,177 @@ export async function appendGastoVarios(
   });
 }
 
+function usedRowAt(
+  used: unknown[][],
+  excelRow: number,
+): (string | number | boolean | null)[] {
+  const raw = used[excelRow - 1] ?? [];
+  return raw.map((c) => cellValue(c));
+}
+
+function padRow(
+  row: (string | number | boolean | null)[],
+  width: number,
+): (string | number | boolean | null)[] {
+  const next: (string | number | boolean | null)[] = Array.from(
+    { length: width },
+    () => null,
+  );
+  for (let i = 0; i < Math.min(row.length, width); i++) {
+    next[i] = row[i] ?? null;
+  }
+  return next;
+}
+
+export type UpdateGastoInput = AppendGastoInput & {
+  /** Excel 1-based row */
+  row: number;
+  /** Quincena where the amount currently lives (if moving). */
+  previousQuincena?: number;
+};
+
+/**
+ * Updates description, category, amount and optionally moves the amount
+ * to another quincena column. Other quincena cells on the same row are kept.
+ */
+export async function updateGastoVarios(
+  accessToken: string,
+  driveId: string,
+  itemId: string,
+  input: UpdateGastoInput,
+): Promise<{ worksheet: Worksheet; row: number }> {
+  const worksheet = await ensureGastosVariosSheet(accessToken, driveId, itemId);
+  const q = Math.min(
+    Math.max(Math.floor(input.quincena), 1),
+    GASTOS_VARIOS_QUINCENAS,
+  );
+  const prevQ = Math.min(
+    Math.max(Math.floor(input.previousQuincena ?? input.quincena), 1),
+    GASTOS_VARIOS_QUINCENAS,
+  );
+  const width = GASTOS_VARIOS_DATA_START + GASTOS_VARIOS_QUINCENAS;
+  const lastColLetter = colLetter(width - 1);
+
+  return withWorkbookSession(accessToken, driveId, itemId, async (sessionHeaders) => {
+    const range = await graphFetch<UsedRange>(
+      accessToken,
+      itemPath(
+        driveId,
+        itemId,
+        `/workbook/worksheets/${encodeURIComponent(worksheet.id)}/usedRange(valuesOnly=true)?$select=values`,
+      ),
+      { headers: sessionHeaders },
+    );
+    const used = range.values ?? [];
+    if (input.row < 2 || input.row > used.length) {
+      throw new Error(`Fila ${input.row} no existe en Gastos Varios`);
+    }
+    const existing = usedRowAt(used, input.row);
+    if (!isGastosVariosExpenseRow(existing)) {
+      throw new Error("Esa fila no es un gasto editable");
+    }
+
+    const next = padRow(existing, width);
+    next[0] = input.description.trim();
+    next[1] = input.category.trim();
+    if (prevQ !== q) {
+      next[GASTOS_VARIOS_DATA_START + prevQ - 1] = null;
+    }
+    next[GASTOS_VARIOS_DATA_START + q - 1] = Math.abs(input.amount);
+
+    await writeRangeValues(
+      accessToken,
+      driveId,
+      itemId,
+      worksheet.id,
+      `A${input.row}:${lastColLetter}${input.row}`,
+      [next],
+      sessionHeaders,
+    );
+
+    return { worksheet, row: input.row };
+  });
+}
+
+/**
+ * Deletes a gasto. If the row only has this quincena amount, removes the
+ * whole Excel row (shift up). Otherwise clears that quincena cell.
+ */
+export async function deleteGastoVarios(
+  accessToken: string,
+  driveId: string,
+  itemId: string,
+  row: number,
+  quincena?: number,
+): Promise<{ worksheet: Worksheet; deleted: "row" | "cell" }> {
+  const worksheet = await ensureGastosVariosSheet(accessToken, driveId, itemId);
+
+  return withWorkbookSession(accessToken, driveId, itemId, async (sessionHeaders) => {
+    const range = await graphFetch<UsedRange>(
+      accessToken,
+      itemPath(
+        driveId,
+        itemId,
+        `/workbook/worksheets/${encodeURIComponent(worksheet.id)}/usedRange(valuesOnly=true)?$select=values`,
+      ),
+      { headers: sessionHeaders },
+    );
+    const used = range.values ?? [];
+    if (row < 2 || row > used.length) {
+      throw new Error(`Fila ${row} no existe en Gastos Varios`);
+    }
+    const existing = usedRowAt(used, row);
+    if (!isGastosVariosExpenseRow(existing)) {
+      throw new Error("Esa fila no es un gasto que se pueda borrar");
+    }
+
+    const q =
+      quincena !== undefined
+        ? Math.min(Math.max(Math.floor(quincena), 1), GASTOS_VARIOS_QUINCENAS)
+        : undefined;
+
+    let others = 0;
+    for (let i = 1; i <= GASTOS_VARIOS_QUINCENAS; i++) {
+      if (q !== undefined && i === q) continue;
+      if (cellToAbsNumber(existing[GASTOS_VARIOS_DATA_START + i - 1]) !== 0) {
+        others += 1;
+      }
+    }
+
+    if (q !== undefined && others > 0) {
+      const col = colLetter(GASTOS_VARIOS_DATA_START + q - 1);
+      await writeRangeValues(
+        accessToken,
+        driveId,
+        itemId,
+        worksheet.id,
+        `${col}${row}`,
+        [[null]],
+        sessionHeaders,
+      );
+      return { worksheet, deleted: "cell" };
+    }
+
+    await graphFetch(
+      accessToken,
+      itemPath(
+        driveId,
+        itemId,
+        `/workbook/worksheets/${encodeURIComponent(worksheet.id)}/range(address='${row}:${row}')/delete`,
+      ),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...sessionHeaders,
+        },
+        body: JSON.stringify({ shift: "Up" }),
+      },
+    );
+    return { worksheet, deleted: "row" };
+  });
+}
+
 /**
  * True when the row is a real expense line (not headers / balance row).
  * Layout: A=descripción, B=categoría, C+=quincenas.

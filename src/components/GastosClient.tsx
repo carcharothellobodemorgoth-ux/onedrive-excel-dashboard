@@ -18,6 +18,14 @@ type DriveItem = {
   parentReference?: { driveId?: string };
 };
 
+type GastoItem = {
+  excelRow: number;
+  description: string;
+  category: string;
+  amount: number;
+  quincena: number;
+};
+
 const ITEM_KEY = "excel-dashboard-item-id";
 const DRIVE_KEY = "excel-dashboard-drive-id";
 
@@ -41,9 +49,12 @@ export function GastosClient({ userName }: { userName?: string | null }) {
   const [quincena, setQuincena] = useState<number>(1);
   /** Filter for the expense list: "all" or quincena 1–24 */
   const [listQuincena, setListQuincena] = useState<number | "all">("all");
-  const [recent, setRecent] = useState<
-    { description: string; category: string; amount: number; quincena: number }[]
-  >([]);
+  const [recent, setRecent] = useState<GastoItem[]>([]);
+  const [editing, setEditing] = useState<{
+    excelRow: number;
+    quincena: number;
+  } | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
 
   const quincenaOptions = useMemo(() => listQuincenaOptions(24), []);
 
@@ -130,12 +141,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
       const gvData = gvRaw ? (JSON.parse(gvRaw) as Record<string, unknown>) : {};
       if (gvRes.ok && Array.isArray(gvData.rows)) {
         const rows = gvData.rows as (string | number | boolean | null)[][];
-        const parsed: {
-          description: string;
-          category: string;
-          amount: number;
-          quincena: number;
-        }[] = [];
+        const parsed: GastoItem[] = [];
         for (let r = rows.length - 1; r >= 0; r--) {
           const row = rows[r];
           if (!isGastosVariosExpenseRow(row)) continue;
@@ -162,6 +168,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
                   : 0;
             if (Number.isFinite(n) && n !== 0) {
               parsed.push({
+                excelRow: r + 1,
                 description: desc,
                 category: cat,
                 amount: Math.abs(n),
@@ -190,7 +197,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
     setOkMsg(null);
     try {
       const res = await apiFetch("/api/excel/gastos", {
-        method: "POST",
+        method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           description,
@@ -199,6 +206,9 @@ export function GastosClient({ userName }: { userName?: string | null }) {
           quincena,
           itemId,
           driveId,
+          ...(editing
+            ? { row: editing.excelRow, previousQuincena: editing.quincena }
+            : {}),
         }),
       });
       const raw = await res.text();
@@ -211,10 +221,13 @@ export function GastosClient({ userName }: { userName?: string | null }) {
         );
       }
       setOkMsg(
-        `Guardado en fila ${data.row as number} · ${quincenaLabel(quincena)}`,
+        editing
+          ? `Actualizado · ${quincenaLabel(quincena)}`
+          : `Guardado en fila ${data.row as number} · ${quincenaLabel(quincena)}`,
       );
       setDescription("");
       setAmount("");
+      setEditing(null);
       await loadContext();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al guardar");
@@ -226,10 +239,77 @@ export function GastosClient({ userName }: { userName?: string | null }) {
     category,
     description,
     driveId,
+    editing,
     itemId,
     loadContext,
     quincena,
   ]);
+
+  const startEdit = useCallback((item: GastoItem) => {
+    setEditing({ excelRow: item.excelRow, quincena: item.quincena });
+    setDescription(item.description === "Sin descripción" ? "" : item.description);
+    setCategory(item.category || categories[0] || "");
+    setAmount(String(item.amount));
+    setQuincena(item.quincena);
+    setOkMsg(null);
+    setError(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [categories]);
+
+  const cancelEdit = useCallback(() => {
+    setEditing(null);
+    setDescription("");
+    setAmount("");
+    setOkMsg(null);
+  }, []);
+
+  const removeGasto = useCallback(
+    async (item: GastoItem) => {
+      if (!itemId || !driveId) return;
+      const ok = window.confirm(
+        `¿Eliminar «${item.description}» (${quincenaLabel(item.quincena)})?`,
+      );
+      if (!ok) return;
+      const key = `${item.excelRow}-${item.quincena}`;
+      setBusyKey(key);
+      setError(null);
+      setOkMsg(null);
+      try {
+        const qs = new URLSearchParams({
+          itemId,
+          driveId,
+          row: String(item.excelRow),
+          quincena: String(item.quincena),
+        });
+        const res = await apiFetch(`/api/excel/gastos?${qs}`, {
+          method: "DELETE",
+        });
+        const raw = await res.text();
+        const data = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+        if (!res.ok) {
+          throw new Error(
+            typeof data.error === "string"
+              ? data.error
+              : `Error HTTP ${res.status}`,
+          );
+        }
+        if (
+          editing &&
+          editing.excelRow === item.excelRow &&
+          editing.quincena === item.quincena
+        ) {
+          cancelEdit();
+        }
+        setOkMsg("Gasto eliminado");
+        await loadContext();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Error al eliminar");
+      } finally {
+        setBusyKey(null);
+      }
+    },
+    [cancelEdit, driveId, editing, itemId, loadContext],
+  );
 
   const money = (n: number) =>
     new Intl.NumberFormat("es-AR", {
@@ -246,7 +326,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
             {userName ? `Hola, ${userName}` : "OneDrive Excel"}
           </p>
           <h1 className="mt-1 text-3xl font-semibold tracking-tight text-white">
-            Cargar gasto
+            {editing ? "Editar gasto" : "Cargar gasto"}
           </h1>
           <p className="mt-1 text-sm text-zinc-400">
             {itemName
@@ -347,6 +427,9 @@ export function GastosClient({ userName }: { userName?: string | null }) {
                 onChange={(e) => setCategory(e.target.value)}
                 required
               >
+                {category && !categories.includes(category) && (
+                  <option value={category}>{category}</option>
+                )}
                 {categories.map((c) => (
                   <option key={c} value={c}>
                     {c}
@@ -388,12 +471,26 @@ export function GastosClient({ userName }: { userName?: string | null }) {
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
+            {editing && (
+              <button
+                type="button"
+                onClick={cancelEdit}
+                disabled={saving}
+                className="rounded-full border border-white/15 px-5 py-2.5 text-sm font-medium text-zinc-200 hover:bg-white/5 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+            )}
             <button
               type="submit"
               disabled={saving || !description.trim() || !amount}
               className="rounded-full bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-zinc-950 hover:bg-emerald-400 disabled:opacity-50"
             >
-              {saving ? "Guardando…" : "Guardar gasto"}
+              {saving
+                ? "Guardando…"
+                : editing
+                  ? "Guardar cambios"
+                  : "Guardar gasto"}
             </button>
           </div>
         </form>
@@ -438,10 +535,18 @@ export function GastosClient({ userName }: { userName?: string | null }) {
             </p>
           ) : (
             <ul className="divide-y divide-white/10 rounded-2xl border border-white/10 bg-white/5">
-              {filteredRecent.map((r, i) => (
+              {filteredRecent.map((r) => {
+                const key = `${r.excelRow}-${r.quincena}`;
+                const busy = busyKey === key;
+                const isEditing =
+                  editing?.excelRow === r.excelRow &&
+                  editing?.quincena === r.quincena;
+                return (
                 <li
-                  key={`${r.description}-${r.quincena}-${r.amount}-${i}`}
-                  className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                  key={key}
+                  className={`flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between ${
+                    isEditing ? "bg-emerald-500/10" : ""
+                  }`}
                 >
                   <div>
                     <p className="font-medium text-white">{r.description}</p>
@@ -449,11 +554,30 @@ export function GastosClient({ userName }: { userName?: string | null }) {
                       {r.category || "Sin categoría"} · {quincenaLabel(r.quincena)}
                     </p>
                   </div>
-                  <p className="text-sm font-semibold text-emerald-300">
-                    {money(r.amount)}
-                  </p>
+                  <div className="flex items-center gap-3">
+                    <p className="text-sm font-semibold text-emerald-300">
+                      {money(r.amount)}
+                    </p>
+                    <button
+                      type="button"
+                      disabled={saving || busy}
+                      onClick={() => startEdit(r)}
+                      className="text-xs font-medium text-zinc-300 hover:text-white disabled:opacity-50"
+                    >
+                      Editar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={saving || busy}
+                      onClick={() => void removeGasto(r)}
+                      className="text-xs font-medium text-red-300 hover:text-red-200 disabled:opacity-50"
+                    >
+                      {busy ? "…" : "Eliminar"}
+                    </button>
+                  </div>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </section>
