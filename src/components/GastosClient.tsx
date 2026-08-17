@@ -544,25 +544,28 @@ export function GastosClient({ userName }: { userName?: string | null }) {
                 return (
                 <li
                   key={key}
-                  className={`flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between ${
+                  className={`flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between ${
                     isEditing ? "bg-emerald-500/10" : ""
                   }`}
                 >
-                  <div>
+                  <div className="min-w-0">
                     <p className="font-medium text-white">{r.description}</p>
                     <p className="text-xs text-zinc-400">
                       {r.category || "Sin categoría"} · {quincenaLabel(r.quincena)}
                     </p>
+                    <p className="mt-1 text-base font-semibold text-emerald-300 sm:hidden">
+                      {money(r.amount)}
+                    </p>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <p className="text-sm font-semibold text-emerald-300">
+                  <div className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0 sm:items-center sm:gap-2">
+                    <p className="hidden text-sm font-semibold text-emerald-300 sm:block sm:pr-2">
                       {money(r.amount)}
                     </p>
                     <button
                       type="button"
                       disabled={saving || busy}
                       onClick={() => startEdit(r)}
-                      className="text-xs font-medium text-zinc-300 hover:text-white disabled:opacity-50"
+                      className="min-h-11 rounded-full border border-white/15 px-4 text-sm font-semibold text-zinc-100 hover:bg-white/10 disabled:opacity-50"
                     >
                       Editar
                     </button>
@@ -570,7 +573,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
                       type="button"
                       disabled={saving || busy}
                       onClick={() => void removeGasto(r)}
-                      className="text-xs font-medium text-red-300 hover:text-red-200 disabled:opacity-50"
+                      className="min-h-11 rounded-full border border-red-400/30 px-4 text-sm font-semibold text-red-200 hover:bg-red-500/15 disabled:opacity-50"
                     >
                       {busy ? "…" : "Eliminar"}
                     </button>
