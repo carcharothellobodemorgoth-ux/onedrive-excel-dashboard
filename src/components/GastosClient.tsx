@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { flushSync } from "react-dom";
 import {
   detectCurrentQuincenaCol,
   listExpenseCategories,
@@ -10,6 +11,7 @@ import {
 } from "@/lib/dashboard";
 import { apiFetch } from "@/lib/api-fetch";
 import { isGastosVariosExpenseRow } from "@/lib/graph";
+import { pressable, tapFeedback } from "@/lib/tap";
 
 type Worksheet = { id: string; name: string; position: number };
 type DriveItem = {
@@ -55,6 +57,8 @@ export function GastosClient({ userName }: { userName?: string | null }) {
     quincena: number;
   } | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [confirmKey, setConfirmKey] = useState<string | null>(null);
+  const [formFlash, setFormFlash] = useState(false);
 
   const quincenaOptions = useMemo(() => listQuincenaOptions(24), []);
 
@@ -192,9 +196,12 @@ export function GastosClient({ userName }: { userName?: string | null }) {
 
   const submit = useCallback(async () => {
     if (!itemId || !driveId) return;
-    setSaving(true);
-    setError(null);
-    setOkMsg(null);
+    tapFeedback();
+    flushSync(() => {
+      setSaving(true);
+      setError(null);
+      setOkMsg(null);
+    });
     try {
       const res = await apiFetch("/api/excel/gastos", {
         method: editing ? "PATCH" : "POST",
@@ -246,34 +253,45 @@ export function GastosClient({ userName }: { userName?: string | null }) {
   ]);
 
   const startEdit = useCallback((item: GastoItem) => {
-    setEditing({ excelRow: item.excelRow, quincena: item.quincena });
-    setDescription(item.description === "Sin descripción" ? "" : item.description);
-    setCategory(item.category || categories[0] || "");
-    setAmount(String(item.amount));
-    setQuincena(item.quincena);
-    setOkMsg(null);
-    setError(null);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    tapFeedback();
+    setConfirmKey(null);
+    flushSync(() => {
+      setEditing({ excelRow: item.excelRow, quincena: item.quincena });
+      setDescription(item.description === "Sin descripción" ? "" : item.description);
+      setCategory(item.category || categories[0] || "");
+      setAmount(String(item.amount));
+      setQuincena(item.quincena);
+      setOkMsg(null);
+      setError(null);
+      setFormFlash(true);
+    });
+    document.getElementById("gasto-form")?.scrollIntoView({
+      behavior: "auto",
+      block: "start",
+    });
+    window.setTimeout(() => setFormFlash(false), 700);
   }, [categories]);
 
   const cancelEdit = useCallback(() => {
+    tapFeedback();
     setEditing(null);
     setDescription("");
     setAmount("");
     setOkMsg(null);
+    setFormFlash(false);
   }, []);
 
   const removeGasto = useCallback(
     async (item: GastoItem) => {
       if (!itemId || !driveId) return;
-      const ok = window.confirm(
-        `¿Eliminar «${item.description}» (${quincenaLabel(item.quincena)})?`,
-      );
-      if (!ok) return;
       const key = `${item.excelRow}-${item.quincena}`;
-      setBusyKey(key);
-      setError(null);
-      setOkMsg(null);
+      tapFeedback();
+      flushSync(() => {
+        setBusyKey(key);
+        setConfirmKey(null);
+        setError(null);
+        setOkMsg(null);
+      });
       try {
         const qs = new URLSearchParams({
           itemId,
@@ -298,7 +316,9 @@ export function GastosClient({ userName }: { userName?: string | null }) {
           editing.excelRow === item.excelRow &&
           editing.quincena === item.quincena
         ) {
-          cancelEdit();
+          setEditing(null);
+          setDescription("");
+          setAmount("");
         }
         setOkMsg("Gasto eliminado");
         await loadContext();
@@ -308,7 +328,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
         setBusyKey(null);
       }
     },
-    [cancelEdit, driveId, editing, itemId, loadContext],
+    [driveId, editing, itemId, loadContext],
   );
 
   const money = (n: number) =>
@@ -337,7 +357,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
         <nav className="flex shrink-0 flex-nowrap items-center gap-1.5 sm:gap-2">
           <Link
             href="/dashboard"
-            className="whitespace-nowrap rounded-full border border-white/15 px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/5 sm:px-4 sm:py-2 sm:text-sm"
+            className={`${pressable} whitespace-nowrap rounded-full border border-white/15 px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/5 sm:px-4 sm:py-2 sm:text-sm`}
           >
             Proyección
           </Link>
@@ -346,7 +366,8 @@ export function GastosClient({ userName }: { userName?: string | null }) {
           </span>
           <a
             href="/api/auth/signout"
-            className="whitespace-nowrap rounded-full border border-white/15 px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/5 sm:px-4 sm:py-2 sm:text-sm"
+            onClick={() => tapFeedback()}
+            className={`${pressable} whitespace-nowrap rounded-full border border-white/15 px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/5 sm:px-4 sm:py-2 sm:text-sm`}
           >
             Cerrar sesión
           </a>
@@ -380,7 +401,14 @@ export function GastosClient({ userName }: { userName?: string | null }) {
         <p className="text-zinc-400">Cargando categorías y quincenas…</p>
       ) : (
         <form
-          className="flex flex-col gap-5 rounded-2xl border border-white/10 bg-white/5 p-5"
+          id="gasto-form"
+          className={`flex flex-col gap-5 rounded-2xl border bg-white/5 p-5 transition-shadow duration-300 ${
+            formFlash
+              ? "border-emerald-400/60 shadow-[0_0_0_3px_rgba(52,211,153,0.35)]"
+              : editing
+                ? "border-emerald-400/40"
+                : "border-white/10"
+          }`}
           onSubmit={(e) => {
             e.preventDefault();
             void submit();
@@ -476,7 +504,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
                 type="button"
                 onClick={cancelEdit}
                 disabled={saving}
-                className="rounded-full border border-white/15 px-5 py-2.5 text-sm font-medium text-zinc-200 hover:bg-white/5 disabled:opacity-50"
+                className={`${pressable} rounded-full border border-white/15 px-5 py-2.5 text-sm font-medium text-zinc-200 hover:bg-white/5 disabled:opacity-50`}
               >
                 Cancelar
               </button>
@@ -484,7 +512,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
             <button
               type="submit"
               disabled={saving || !description.trim() || !amount}
-              className="rounded-full bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-zinc-950 hover:bg-emerald-400 disabled:opacity-50"
+              className={`${pressable} rounded-full bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-zinc-950 hover:bg-emerald-400 disabled:opacity-50`}
             >
               {saving
                 ? "Guardando…"
@@ -538,6 +566,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
               {filteredRecent.map((r) => {
                 const key = `${r.excelRow}-${r.quincena}`;
                 const busy = busyKey === key;
+                const confirming = confirmKey === key;
                 const isEditing =
                   editing?.excelRow === r.excelRow &&
                   editing?.quincena === r.quincena;
@@ -546,7 +575,7 @@ export function GastosClient({ userName }: { userName?: string | null }) {
                   key={key}
                   className={`flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between ${
                     isEditing ? "bg-emerald-500/10" : ""
-                  }`}
+                  } ${confirming ? "bg-red-500/10" : ""}`}
                 >
                   <div className="min-w-0">
                     <p className="font-medium text-white">{r.description}</p>
@@ -557,6 +586,32 @@ export function GastosClient({ userName }: { userName?: string | null }) {
                       {money(r.amount)}
                     </p>
                   </div>
+                  {confirming ? (
+                    <div className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0 sm:items-center">
+                      <p className="col-span-2 text-sm text-red-100 sm:hidden">
+                        ¿Eliminar este gasto?
+                      </p>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          tapFeedback();
+                          setConfirmKey(null);
+                        }}
+                        className={`${pressable} min-h-11 rounded-full border border-white/15 px-4 text-sm font-semibold text-zinc-100 hover:bg-white/10 disabled:opacity-50`}
+                      >
+                        No
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void removeGasto(r)}
+                        className={`${pressable} min-h-11 rounded-full bg-red-500 px-4 text-sm font-semibold text-white hover:bg-red-400 disabled:opacity-50`}
+                      >
+                        {busy ? "Eliminando…" : "Sí, borrar"}
+                      </button>
+                    </div>
+                  ) : (
                   <div className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0 sm:items-center sm:gap-2">
                     <p className="hidden text-sm font-semibold text-emerald-300 sm:block sm:pr-2">
                       {money(r.amount)}
@@ -565,19 +620,23 @@ export function GastosClient({ userName }: { userName?: string | null }) {
                       type="button"
                       disabled={saving || busy}
                       onClick={() => startEdit(r)}
-                      className="min-h-11 rounded-full border border-white/15 px-4 text-sm font-semibold text-zinc-100 hover:bg-white/10 disabled:opacity-50"
+                      className={`${pressable} min-h-11 rounded-full border border-white/15 px-4 text-sm font-semibold text-zinc-100 hover:bg-white/10 disabled:opacity-50`}
                     >
-                      Editar
+                      {isEditing ? "Editando" : "Editar"}
                     </button>
                     <button
                       type="button"
                       disabled={saving || busy}
-                      onClick={() => void removeGasto(r)}
-                      className="min-h-11 rounded-full border border-red-400/30 px-4 text-sm font-semibold text-red-200 hover:bg-red-500/15 disabled:opacity-50"
+                      onClick={() => {
+                        tapFeedback();
+                        setConfirmKey(key);
+                      }}
+                      className={`${pressable} min-h-11 rounded-full border border-red-400/30 px-4 text-sm font-semibold text-red-200 hover:bg-red-500/15 disabled:opacity-50`}
                     >
-                      {busy ? "…" : "Eliminar"}
+                      Eliminar
                     </button>
                   </div>
+                  )}
                 </li>
                 );
               })}

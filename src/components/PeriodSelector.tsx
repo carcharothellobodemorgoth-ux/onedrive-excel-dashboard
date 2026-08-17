@@ -2,6 +2,7 @@
 
 import type { PeriodSelection } from "@/lib/dashboard";
 import { listMonthOptions, listQuincenaOptions } from "@/lib/dashboard";
+import { pressable } from "@/lib/tap";
 
 const selectClass =
   "min-w-0 max-w-[16rem] rounded-lg border border-white/15 bg-zinc-950/60 px-2.5 py-1.5 text-sm text-white";
@@ -49,7 +50,7 @@ export function PeriodSelector({
                   });
                 }
               }}
-              className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
+              className={`rounded-md px-2.5 py-1 text-xs font-medium ${pressable} ${
                 active
                   ? "bg-white text-zinc-950"
                   : "text-zinc-400 hover:text-zinc-200"

@@ -2,11 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { flushSync } from "react-dom";
 import { AutoCharts } from "@/components/AutoCharts";
 import { KpiCards } from "@/components/KpiCards";
 import { PeriodSelector } from "@/components/PeriodSelector";
 import { SheetTable } from "@/components/SheetTable";
 import { apiFetch } from "@/lib/api-fetch";
+import { pressable, tapFeedback } from "@/lib/tap";
 import {
   buildProyeccionView,
   DEFAULT_PERIOD_SELECTION,
@@ -57,6 +60,8 @@ export function DashboardClient({
 }: {
   userName?: string | null;
 }) {
+  const router = useRouter();
+  const [goingGastos, setGoingGastos] = useState(false);
   const [item, setItem] = useState<DriveItem | null>(null);
   const [itemId, setItemId] = useState<string | null>(null);
   const [driveId, setDriveId] = useState<string | null>(null);
@@ -302,8 +307,11 @@ export function DashboardClient({
   const [refreshing, setRefreshing] = useState(false);
 
   const refreshDashboard = useCallback(async () => {
-    setError(null);
-    setRefreshing(true);
+    tapFeedback();
+    flushSync(() => {
+      setError(null);
+      setRefreshing(true);
+    });
     setSheet(null);
     setGastosVariosByQuincena({});
     try {
@@ -354,21 +362,32 @@ export function DashboardClient({
         <div className="flex flex-wrap gap-2">
           <Link
             href="/dashboard/gastos"
-            className="rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-emerald-400"
+            onClick={(e) => {
+              if (goingGastos) {
+                e.preventDefault();
+                return;
+              }
+              e.preventDefault();
+              tapFeedback();
+              flushSync(() => setGoingGastos(true));
+              router.push("/dashboard/gastos");
+            }}
+            className={`${pressable} rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-emerald-400`}
           >
-            + Cargar gasto
+            {goingGastos ? "Abriendo…" : "+ Cargar gasto"}
           </Link>
           <button
             type="button"
             disabled={refreshing || sheetLoading}
             onClick={() => void refreshDashboard()}
-            className="rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-white/5 disabled:opacity-50"
+            className={`${pressable} rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-white/5 disabled:opacity-50`}
           >
             {refreshing || sheetLoading ? "Actualizando…" : "Actualizar"}
           </button>
           <a
             href="/api/auth/signout"
-            className="rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-white/5"
+            onClick={() => tapFeedback()}
+            className={`${pressable} rounded-full border border-white/15 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-white/5`}
           >
             Cerrar sesión
           </a>
